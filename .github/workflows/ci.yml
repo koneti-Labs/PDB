@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "phase-*"]
+  pull_request:
+
+jobs:
+  test:
+    name: Test (Python 3.11)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install system dependencies (PortAudio for sounddevice)
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y portaudio19-dev ffmpeg
+
+      - name: Install project + dev extras
+        run: |
+          python -m pip install --upgrade pip setuptools
+          pip install -e ".[dev]"
+
+      - name: Lint (ruff)
+        run: ruff check .
+
+      - name: Run tests
+        run: pytest tests/ -v --tb=short

@@ -1,0 +1,16 @@
+  WARNING: The script tqdm is installed in '/sessions/charming-cool-cray/.local/bin' which is not on PATH.
+  Consider adding this directory to PATH or, if you prefer to suppress this warning, use --no-warn-script-location.
+  WARNING: The script pygmentize is installed in '/sessions/charming-cool-cray/.local/bin' which is not on PATH.
+  Consider adding this directory to PATH or, if you prefer to suppress this warning, use --no-warn-script-location.
+  WARNING: The scripts ct2-fairseq-converter, ct2-marian-converter, ct2-openai-gpt2-converter, ct2-opennmt-py-converter, ct2-opennmt-tf-converter, ct2-opus-mt-converter and ct2-transformers-converter are installed in '/sessions/charming-cool-cray/.local/bin' which is not on PATH.
+  Consider adding this directory to PATH or, if you prefer to suppress this warning, use --no-warn-script-location.
+  WARNING: The script pyav is installed in '/sessions/charming-cool-cray/.local/bin' which is not on PATH.
+  Consider adding this directory to PATH or, if you prefer to suppress this warning, use --no-warn-script-location.
+  WARNING: The scripts py.test and pytest are installed in '/sessions/charming-cool-cray/.local/bin' which is not on PATH.
+  Consider adding this directory to PATH or, if you prefer to suppress this warning, use --no-warn-script-location.
+  WARNING: The script typer is installed in '/sessions/charming-cool-cray/.local/bin' which is not on PATH.
+  Consider adding this directory to PATH or, if you prefer to suppress this warning, use --no-warn-script-location.
+  WARNING: The script httpx is installed in '/sessions/charming-cool-cray/.local/bin' which is not on PATH.
+  Consider adding this directory to PATH or, if you prefer to suppress this warning, use --no-warn-script-location.
+  WARNING: The scripts hf, huggingface-cli and tiny-agents are installed in '/sessions/charming-cool-cray/.local/bin' which is not on PATH.
+  Consider adding this directory to PATH or, if you prefer to suppress this warning, use --no-warn-script-location.

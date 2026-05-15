@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=42"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "patient-doctor-bridge"
+version = "0.1.0"
+description = "PatientDoctorBridge — voice capture, language detection, and Gemma 4 translation"
+readme = "README.md"
+requires-python = "==3.11.*"
+dependencies = [
+    "faster-whisper==1.1.1",
+    "sounddevice==0.5.1",
+    "scipy==1.15.2",
+    "numpy>=1.24,<3",
+    "rich>=13",
+    "ollama>=0.4.7",
+    "flask>=3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "ruff>=0.4",
+]
+
+[project.scripts]
+pdb = "cli.main:main"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["audio*", "cli*", "config*", "core*", "translation*", "web*"]

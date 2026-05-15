@@ -1,0 +1,864 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PatientDoctorBridge</title>
+<style>
+  /* ── Reset & base ─────────────────────────────────────────── */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    background: #0f172a;
+    color: #e2e8f0;
+    min-height: 100vh;
+  }
+  /* ── Header ──────────────────────────────────────────────── */
+  header {
+    background: #1e293b;
+    border-bottom: 1px solid #334155;
+    padding: 14px 24px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  header h1 { font-size: 1.25rem; font-weight: 700; color: #38bdf8; }
+  header .badge {
+    background: #0f172a;
+    border: 1px solid #38bdf8;
+    border-radius: 999px;
+    font-size: 0.7rem;
+    padding: 2px 8px;
+    color: #7dd3fc;
+  }
+  /* ── Nav tabs ────────────────────────────────────────────── */
+  nav {
+    display: flex;
+    gap: 4px;
+    padding: 12px 24px 0;
+    border-bottom: 1px solid #1e293b;
+    background: #0f172a;
+  }
+  nav button {
+    background: none;
+    border: none;
+    border-bottom: 3px solid transparent;
+    color: #94a3b8;
+    cursor: pointer;
+    font-size: 0.9rem;
+    font-weight: 600;
+    padding: 8px 16px;
+    transition: color .2s, border-color .2s;
+  }
+  nav button.active { color: #38bdf8; border-bottom-color: #38bdf8; }
+  nav button:hover:not(.active) { color: #e2e8f0; }
+  /* ── Main layout ─────────────────────────────────────────── */
+  main { max-width: 860px; margin: 0 auto; padding: 28px 20px 80px; }
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
+  /* ── Cards ───────────────────────────────────────────────── */
+  .card {
+    background: #1e293b;
+    border: 1px solid #334155;
+    border-radius: 12px;
+    padding: 20px;
+    margin-bottom: 16px;
+  }
+  .card h2 { font-size: 1rem; font-weight: 700; margin-bottom: 12px; color: #7dd3fc; }
+  /* ── Language selector ───────────────────────────────────── */
+  .lang-row { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
+  .lang-row label { font-size: 0.85rem; color: #94a3b8; white-space: nowrap; }
+  .lang-row select {
+    background: #0f172a;
+    border: 1px solid #475569;
+    border-radius: 6px;
+    color: #e2e8f0;
+    font-size: 0.9rem;
+    padding: 6px 10px;
+  }
+  .detected-badge {
+    background: #0c4a6e;
+    border: 1px solid #38bdf8;
+    border-radius: 999px;
+    color: #7dd3fc;
+    font-size: 0.75rem;
+    padding: 2px 10px;
+    display: none;
+  }
+  /* ── Buttons ─────────────────────────────────────────────── */
+  .btn {
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 0.9rem;
+    font-weight: 600;
+    padding: 10px 20px;
+    transition: opacity .2s;
+  }
+  .btn:hover { opacity: 0.85; }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .btn-primary  { background: #0ea5e9; color: #fff; }
+  .btn-danger   { background: #ef4444; color: #fff; }
+  .btn-success  { background: #22c55e; color: #fff; }
+  .btn-purple   { background: #8b5cf6; color: #fff; }
+  .btn-sm { padding: 6px 14px; font-size: 0.82rem; }
+  /* ── Speak button ────────────────────────────────────────── */
+  .btn-speak {
+    background: #1e3a5f;
+    border: 1px solid #38bdf8;
+    border-radius: 6px;
+    color: #7dd3fc;
+    cursor: pointer;
+    font-size: 0.78rem;
+    padding: 3px 9px;
+    display: none;
+    align-items: center;
+    gap: 4px;
+    vertical-align: middle;
+  }
+  .btn-speak.visible { display: inline-flex; }
+  .btn-speak:hover { background: #0c4a6e; }
+  /* ── Record control ──────────────────────────────────────── */
+  .record-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .rec-indicator {
+    width: 12px; height: 12px;
+    border-radius: 50%;
+    background: #475569;
+    display: inline-block;
+  }
+  .rec-indicator.recording { background: #ef4444; animation: pulse 1s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+  .timer { font-size: 0.85rem; color: #94a3b8; min-width: 40px; }
+  /* ── Result boxes ────────────────────────────────────────── */
+  .result-box {
+    background: #0f172a;
+    border: 1px solid #334155;
+    border-radius: 8px;
+    font-size: 0.9rem;
+    line-height: 1.6;
+    min-height: 52px;
+    padding: 12px 14px;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .result-label {
+    color: #64748b;
+    font-size: 0.78rem;
+    margin-bottom: 4px;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .result-group { margin-top: 14px; }
+  /* ── Severity badges ─────────────────────────────────────── */
+  .badge-critical { color:#fca5a5; font-weight:700; }
+  .badge-severe   { color:#fca5a5; }
+  .badge-moderate { color:#fde68a; }
+  .badge-mild     { color:#86efac; }
+  /* ── Triage card ─────────────────────────────────────────── */
+  .triage-grid { display: grid; grid-template-columns: 140px 1fr; gap: 6px 12px; align-items: start; }
+  .triage-key { color: #64748b; font-size: 0.82rem; text-transform: uppercase; letter-spacing: .04em; }
+  .triage-val { font-size: 0.9rem; }
+  .alert-banner {
+    background: #450a0a;
+    border: 1px solid #ef4444;
+    border-radius: 8px;
+    color: #fca5a5;
+    font-weight: 700;
+    margin-bottom: 12px;
+    padding: 10px 14px;
+    text-align: center;
+  }
+  /* ── Phrases grid ────────────────────────────────────────── */
+  .phrase-grid { display: grid; gap: 8px; }
+  .phrase-btn {
+    background: #0f172a;
+    border: 1px solid #334155;
+    border-radius: 8px;
+    color: #e2e8f0;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    text-align: left;
+    transition: border-color .2s, background .2s;
+  }
+  .phrase-btn:hover { background: #1e3a5f; border-color: #38bdf8; }
+  .phrase-btn.selected { background: #1e3a5f; border-color: #38bdf8; }
+  .phrase-cat {
+    border-radius: 4px;
+    font-size: 0.7rem;
+    font-weight: 700;
+    padding: 2px 6px;
+    white-space: nowrap;
+  }
+  .cat-URGENT  { background:#7f1d1d; color:#fca5a5; }
+  .cat-MEDICAL { background:#713f12; color:#fde68a; }
+  .cat-COMFORT { background:#14532d; color:#86efac; }
+  .cat-INFO    { background:#0c4a6e; color:#7dd3fc; }
+  /* ── Prescription table ──────────────────────────────────── */
+  .rx-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+  .rx-table th { background: #0f172a; color: #94a3b8; font-weight: 600; padding: 8px 10px; text-align: left; }
+  .rx-table td { border-top: 1px solid #334155; padding: 8px 10px; vertical-align: top; }
+  .rx-meta { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 14px; }
+  .rx-meta-item { background: #0f172a; border: 1px solid #334155; border-radius: 6px; padding: 8px 10px; }
+  .rx-meta-label { color: #64748b; font-size: 0.75rem; text-transform: uppercase; margin-bottom: 2px; }
+  .rx-meta-val { font-size: 0.88rem; }
+  /* ── Status bar ──────────────────────────────────────────── */
+  .status-bar {
+    background: #1e293b;
+    border-top: 1px solid #334155;
+    bottom: 0;
+    color: #64748b;
+    font-size: 0.78rem;
+    left: 0;
+    padding: 6px 24px;
+    position: fixed;
+    right: 0;
+  }
+  .status-ok { color: #4ade80; }
+  .status-warn { color: #facc15; }
+  .status-err { color: #f87171; }
+  /* ── Spinner ─────────────────────────────────────────────── */
+  .spinner {
+    display: inline-block;
+    width: 16px; height: 16px;
+    border: 2px solid #334155;
+    border-top-color: #38bdf8;
+    border-radius: 50%;
+    animation: spin .7s linear infinite;
+    vertical-align: middle;
+    margin-right: 6px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  /* ── File upload ─────────────────────────────────────────── */
+  .upload-area {
+    border: 2px dashed #475569;
+    border-radius: 10px;
+    cursor: pointer;
+    padding: 28px;
+    text-align: center;
+    transition: border-color .2s;
+  }
+  .upload-area:hover, .upload-area.dragover { border-color: #38bdf8; }
+  .upload-area input[type=file] { display: none; }
+  .upload-area p { color: #64748b; font-size: 0.9rem; margin-top: 6px; }
+  /* ── Speaking indicator ──────────────────────────────────── */
+  .speaking-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: #4ade80;
+    display: inline-block;
+    animation: pulse 0.8s infinite;
+    vertical-align: middle;
+    margin-right: 4px;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>PatientDoctorBridge</h1>
+  <span class="badge">Gemma 4 · Local</span>
+</header>
+
+<nav>
+  <button class="active" onclick="switchTab('bridge', this)">Bridge</button>
+  <button onclick="switchTab('triage', this)">Triage</button>
+  <button onclick="switchTab('prescription', this)">Prescription</button>
+  <button onclick="switchTab('reassure', this)">Reassure</button>
+</nav>
+
+<main>
+
+<!-- ═══════════════════════ BRIDGE TAB ═══════════════════════════ -->
+<div id="tab-bridge" class="tab-panel active">
+
+  <!-- Patient → Doctor -->
+  <div class="card">
+    <h2>Patient → Doctor (English)</h2>
+    <div class="lang-row">
+      <label>Patient language:</label>
+      <select id="bridge-lang">
+        <option value="hi">Hindi</option>
+        <option value="te">Telugu</option>
+        <option value="kn">Kannada</option>
+        <option value="ta">Tamil</option>
+        <option value="en">English</option>
+      </select>
+      <span class="detected-badge" id="detected-lang-badge"></span>
+    </div>
+    <div class="record-row">
+      <button class="btn btn-primary" id="btn-rec-patient" onclick="startRecord('patient')">
+        &#9679; Record Patient
+      </button>
+      <button class="btn btn-danger" id="btn-stop-patient" onclick="stopRecord('patient')" disabled>
+        &#9632; Stop
+      </button>
+      <span class="rec-indicator" id="ind-patient"></span>
+      <span class="timer" id="timer-patient">0:00</span>
+    </div>
+    <div class="result-group">
+      <div class="result-label">Transcript</div>
+      <div class="result-box" id="patient-transcript">—</div>
+    </div>
+    <div class="result-group">
+      <div class="result-label">
+        Translation for Doctor (English)
+        <button class="btn-speak" id="speak-patient-trans" onclick="speakEl('patient-translation','en')">🔊 Speak</button>
+      </div>
+      <div class="result-box" id="patient-translation">—</div>
+    </div>
+  </div>
+
+  <!-- Doctor → Patient -->
+  <div class="card">
+    <h2>Doctor → Patient</h2>
+    <div class="lang-row">
+      <label>Translate back to:</label>
+      <select id="doctor-lang">
+        <option value="hi">Hindi</option>
+        <option value="te">Telugu</option>
+        <option value="kn">Kannada</option>
+        <option value="ta">Tamil</option>
+        <option value="en">English</option>
+      </select>
+      <span style="font-size:0.75rem;color:#64748b;">(auto-synced after patient speaks)</span>
+    </div>
+    <div class="record-row">
+      <button class="btn btn-primary" id="btn-rec-doctor" onclick="startRecord('doctor')">
+        &#9679; Record Doctor
+      </button>
+      <button class="btn btn-danger" id="btn-stop-doctor" onclick="stopRecord('doctor')" disabled>
+        &#9632; Stop
+      </button>
+      <span class="rec-indicator" id="ind-doctor"></span>
+      <span class="timer" id="timer-doctor">0:00</span>
+    </div>
+    <div class="result-group">
+      <div class="result-label">Transcript</div>
+      <div class="result-box" id="doctor-transcript">—</div>
+    </div>
+    <div class="result-group">
+      <div class="result-label">
+        Translation for Patient
+        <button class="btn-speak" id="speak-doctor-trans" onclick="speakEl('doctor-translation', currentPatientLang)">🔊 Speak</button>
+        <span id="speaking-badge" style="display:none;font-size:0.78rem;color:#4ade80;">
+          <span class="speaking-dot"></span>Reading aloud…
+        </span>
+      </div>
+      <div class="result-box" id="doctor-translation">—</div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════ TRIAGE TAB ═══════════════════════════ -->
+<div id="tab-triage" class="tab-panel">
+  <div class="card">
+    <h2>Emergency Triage Extraction</h2>
+    <p style="color:#94a3b8;font-size:.85rem;margin-bottom:14px;">
+      Record the patient speaking in any supported language.
+      Gemma 4 auto-detects the language and extracts structured triage information.
+    </p>
+    <div class="record-row">
+      <button class="btn btn-danger" id="btn-rec-triage" onclick="startRecord('triage')">
+        &#9679; Record Patient
+      </button>
+      <button class="btn btn-primary" id="btn-stop-triage" onclick="stopRecord('triage')" disabled>
+        &#9632; Stop &amp; Analyse
+      </button>
+      <span class="rec-indicator" id="ind-triage"></span>
+      <span class="timer" id="timer-triage">0:00</span>
+    </div>
+  </div>
+  <div class="card" id="triage-result-card" style="display:none;">
+    <h2>Triage Result</h2>
+    <div id="triage-alert"></div>
+    <div class="triage-grid" id="triage-grid"></div>
+  </div>
+</div>
+
+<!-- ═══════════════════════ PRESCRIPTION TAB ═════════════════════ -->
+<div id="tab-prescription" class="tab-panel">
+  <div class="card">
+    <h2>Prescription OCR</h2>
+    <p style="color:#94a3b8;font-size:.85rem;margin-bottom:14px;">
+      Upload a photo of a handwritten or printed prescription.
+      Gemma 4 extracts all medicine details.
+    </p>
+    <div class="upload-area" id="upload-area" onclick="document.getElementById('rx-file-input').click()"
+         ondrop="handleDrop(event)" ondragover="handleDragOver(event)" ondragleave="handleDragLeave(event)">
+      <input type="file" id="rx-file-input" accept="image/*" onchange="handleFileSelect(event)">
+      <div style="font-size:2rem;">&#128247;</div>
+      <p>Click to upload or drag &amp; drop a prescription image</p>
+      <p style="font-size:.78rem;margin-top:4px;">JPEG, PNG, WebP supported</p>
+    </div>
+    <div style="margin-top:12px;display:flex;gap:10px;align-items:center;">
+      <button class="btn btn-purple" id="btn-rx-process" onclick="processPrescription()" disabled>
+        Process Prescription
+      </button>
+      <span id="rx-filename" style="color:#64748b;font-size:.85rem;"></span>
+    </div>
+  </div>
+  <div class="card" id="rx-result-card" style="display:none;">
+    <h2>Prescription Details</h2>
+    <div class="rx-meta" id="rx-meta"></div>
+    <div class="result-label" style="margin-bottom:8px;">Medicines</div>
+    <table class="rx-table">
+      <thead>
+        <tr>
+          <th>#</th><th>Medicine</th><th>Dosage</th><th>Form</th>
+          <th>Frequency</th><th>Duration</th><th>Instructions</th>
+        </tr>
+      </thead>
+      <tbody id="rx-medicines"></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ═══════════════════════ REASSURE TAB ═════════════════════════ -->
+<div id="tab-reassure" class="tab-panel">
+  <div class="card">
+    <h2>Emergency Reassurance Phrases</h2>
+    <div class="lang-row" style="margin-bottom:16px;">
+      <label>Translate to:</label>
+      <select id="reassure-lang">
+        <option value="hi">Hindi</option>
+        <option value="te">Telugu</option>
+        <option value="kn">Kannada</option>
+        <option value="ta">Tamil</option>
+        <option value="en">English (no translation)</option>
+      </select>
+    </div>
+    <div class="phrase-grid" id="phrase-grid">
+      <!-- populated by JS -->
+    </div>
+  </div>
+  <div class="card" id="reassure-result-card" style="display:none;">
+    <h2>Translation</h2>
+    <div class="result-group">
+      <div class="result-label">Original (English)</div>
+      <div class="result-box" id="reassure-original">—</div>
+    </div>
+    <div class="result-group">
+      <div class="result-label">
+        Translation
+        <button class="btn-speak" id="speak-reassure" onclick="speakEl('reassure-translated', document.getElementById('reassure-lang').value)">🔊 Speak</button>
+      </div>
+      <div class="result-box" id="reassure-translated" style="font-size:1.1rem;"></div>
+    </div>
+  </div>
+</div>
+
+</main>
+
+<div class="status-bar" id="status-bar">
+  Checking Ollama connection…
+</div>
+
+<script>
+// ─── Global state ────────────────────────────────────────────────────────────
+let currentPatientLang = 'hi';   // ISO code of the patient's detected language
+
+// BCP-47 locale tags for Web Speech API
+const LANG_BCP47 = { hi:'hi-IN', te:'te-IN', kn:'kn-IN', ta:'ta-IN', en:'en-US' };
+const LANG_NAMES  = { hi:'Hindi', te:'Telugu', kn:'Kannada', ta:'Tamil', en:'English' };
+
+// ─── Tab switching ──────────────────────────────────────────────────────────
+function switchTab(name, btn) {
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
+  document.getElementById('tab-' + name).classList.add('active');
+  if (btn) btn.classList.add('active');
+}
+
+// ─── MediaRecorder state ────────────────────────────────────────────────────
+const recState = {};
+
+async function startRecord(role) {
+  if (recState[role]?.mediaRecorder) return;
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+  } catch (e) {
+    setStatus('Microphone access denied: ' + e.message, 'err');
+    return;
+  }
+  const chunks = [];
+  const mr = new MediaRecorder(stream);
+  mr.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
+  mr.onstop = () => { uploadAudio(role, chunks); stream.getTracks().forEach(t => t.stop()); };
+  recState[role] = { mediaRecorder: mr, chunks, startTime: Date.now() };
+  mr.start(250);
+  document.getElementById('btn-rec-' + role).disabled = true;
+  document.getElementById('btn-stop-' + role).disabled = false;
+  document.getElementById('ind-' + role).classList.add('recording');
+  startTimer(role);
+}
+
+function stopRecord(role) {
+  const s = recState[role];
+  if (!s?.mediaRecorder) return;
+  s.mediaRecorder.stop();
+  recState[role] = null;
+  document.getElementById('btn-rec-' + role).disabled = false;
+  document.getElementById('btn-stop-' + role).disabled = true;
+  document.getElementById('ind-' + role).classList.remove('recording');
+  stopTimer(role);
+}
+
+// ─── Timer ──────────────────────────────────────────────────────────────────
+const timers = {};
+function startTimer(role) {
+  const el = document.getElementById('timer-' + role);
+  let s = 0;
+  timers[role] = setInterval(() => {
+    s++;
+    el.textContent = Math.floor(s/60) + ':' + String(s%60).padStart(2,'0');
+  }, 1000);
+}
+function stopTimer(role) {
+  clearInterval(timers[role]);
+  document.getElementById('timer-' + role).textContent = '0:00';
+}
+
+// ─── Audio upload & processing ───────────────────────────────────────────────
+async function uploadAudio(role, chunks) {
+  const blob = new Blob(chunks, { type: 'audio/webm' });
+  const form = new FormData();
+  form.append('audio', blob, 'recording.webm');
+
+  let endpoint, lang;
+
+  if (role === 'patient') {
+    lang = document.getElementById('bridge-lang').value;
+    endpoint = '/api/bridge/patient';
+    setBox('patient-transcript', spinner('Transcribing…'));
+    setBox('patient-translation', spinner('Translating with Gemma 4…'));
+    setSpeakBtn('speak-patient-trans', false);
+  } else if (role === 'doctor') {
+    lang = document.getElementById('doctor-lang').value;
+    endpoint = '/api/bridge/doctor';
+    setBox('doctor-transcript', spinner('Transcribing…'));
+    setBox('doctor-translation', spinner('Translating with Gemma 4…'));
+    setSpeakBtn('speak-doctor-trans', false);
+    document.getElementById('speaking-badge').style.display = 'none';
+  } else if (role === 'triage') {
+    lang = 'auto';
+    endpoint = '/api/triage';
+    document.getElementById('triage-result-card').style.display = 'none';
+    setStatus(spinner('Transcribing + extracting triage data…'));
+  }
+
+  form.append('language', lang);
+
+  try {
+    const res = await fetch(endpoint, { method: 'POST', body: form });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Server error');
+
+    if (role === 'patient') {
+      setBox('patient-transcript', data.transcript || '(empty)');
+      setBox('patient-translation', data.translation || '(empty)');
+      setSpeakBtn('speak-patient-trans', true);
+
+      // ── Auto-sync detected language to doctor-lang selector ──────────────
+      const detectedLang = data.detected_language;
+      if (detectedLang) {
+        currentPatientLang = detectedLang;
+        const sel = document.getElementById('doctor-lang');
+        if ([...sel.options].some(o => o.value === detectedLang)) {
+          sel.value = detectedLang;
+        }
+        const badge = document.getElementById('detected-lang-badge');
+        badge.textContent = '✓ Auto-detected: ' + (LANG_NAMES[detectedLang] || detectedLang);
+        badge.style.display = 'inline-block';
+      }
+      setStatus('Patient transcribed. Now record the doctor\'s response.', 'ok');
+
+    } else if (role === 'doctor') {
+      setBox('doctor-transcript', data.transcript || '(empty)');
+      const translation = data.translation || '(empty)';
+      setBox('doctor-translation', translation);
+      setSpeakBtn('speak-doctor-trans', true);
+
+      // ── Auto-speak translation so patient hears it ───────────────────────
+      if (translation && translation !== '(empty)') {
+        const speakLang = data.target_language || currentPatientLang;
+        showSpeakingBadge(true);
+        ttsSpeak(translation, speakLang, () => showSpeakingBadge(false));
+      }
+      setStatus('Bridge ready.', 'ok');
+
+    } else if (role === 'triage') {
+      renderTriage(data);
+      setStatus('Triage complete.', 'ok');
+    }
+  } catch (e) {
+    if (role === 'patient') {
+      setBox('patient-transcript', '⚠ ' + e.message);
+      setBox('patient-translation', '—');
+    } else if (role === 'doctor') {
+      setBox('doctor-transcript', '⚠ ' + e.message);
+      setBox('doctor-translation', '—');
+    } else if (role === 'triage') {
+      setStatus('Triage error: ' + e.message, 'err');
+    }
+  }
+}
+
+// ─── TTS via Web Speech API ──────────────────────────────────────────────────
+/**
+ * Speak text of element #id in the given ISO 639-1 language.
+ */
+function speakEl(id, langCode) {
+  const text = document.getElementById(id)?.textContent?.trim();
+  if (!text || text === '—' || text === '(empty)') return;
+  ttsSpeak(text, langCode);
+}
+
+/**
+ * ttsSpeak(text, langCode, onEnd?)
+ * Uses the browser's Web Speech API (offline, no external calls).
+ * Falls back silently if speechSynthesis is unavailable.
+ */
+function ttsSpeak(text, langCode, onEnd) {
+  if (!window.speechSynthesis) {
+    if (onEnd) onEnd();
+    return;
+  }
+  window.speechSynthesis.cancel();
+
+  const utt = new SpeechSynthesisUtterance(text);
+  utt.lang  = LANG_BCP47[langCode] || 'hi-IN';
+  utt.rate  = 0.9;
+  utt.pitch = 1.0;
+
+  // Pick best matching voice if available
+  const voices = window.speechSynthesis.getVoices();
+  const base = (LANG_BCP47[langCode] || 'hi-IN').split('-')[0];
+  const voice = voices.find(v => v.lang.startsWith(base));
+  if (voice) utt.voice = voice;
+
+  utt.onend   = () => { if (onEnd) onEnd(); };
+  utt.onerror = () => { if (onEnd) onEnd(); };
+
+  window.speechSynthesis.speak(utt);
+}
+
+// Chrome loads voices asynchronously; trigger a refresh on change
+if (window.speechSynthesis) {
+  window.speechSynthesis.onvoiceschanged = () => {};
+}
+
+function setSpeakBtn(id, visible) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.classList.toggle('visible', visible);
+}
+
+function showSpeakingBadge(show) {
+  document.getElementById('speaking-badge').style.display = show ? 'inline' : 'none';
+}
+
+// ─── Triage rendering ────────────────────────────────────────────────────────
+function renderTriage(data) {
+  const card = document.getElementById('triage-result-card');
+  const t = data.triage || {};
+
+  document.getElementById('triage-alert').innerHTML = t.needs_immediate_attention
+    ? '<div class="alert-banner">⚠ IMMEDIATE ATTENTION REQUIRED ⚠</div>' : '';
+
+  const sevCls = { critical:'badge-critical', severe:'badge-severe', moderate:'badge-moderate', mild:'badge-mild' }[t.severity] || '';
+  const symptoms = (t.symptoms || []).map(s => '• ' + s).join('\n') || 'none reported';
+  const vitals   = (t.vitals_mentioned || []).map(v => '• ' + v).join('\n') || 'none';
+
+  document.getElementById('triage-grid').innerHTML = `
+    <span class="triage-key">Transcript</span>   <span class="triage-val">${esc(data.transcript || '—')}</span>
+    <span class="triage-key">Chief Complaint</span><span class="triage-val">${esc(t.chief_complaint || '—')}</span>
+    <span class="triage-key">Severity</span>      <span class="triage-val ${sevCls}">${esc(t.severity || '—')}</span>
+    <span class="triage-key">Duration</span>      <span class="triage-val">${esc(t.duration || '—')}</span>
+    <span class="triage-key">Symptoms</span>      <span class="triage-val" style="white-space:pre-line">${esc(symptoms)}</span>
+    <span class="triage-key">Vitals</span>        <span class="triage-val" style="white-space:pre-line">${esc(vitals)}</span>
+    <span class="triage-key">Language</span>      <span class="triage-val">${esc(LANG_NAMES[data.language] || data.language || '—')}</span>
+  `;
+  card.style.display = 'block';
+}
+
+// ─── Prescription upload ─────────────────────────────────────────────────────
+let rxFile = null;
+
+function handleFileSelect(e) {
+  rxFile = e.target.files[0];
+  if (rxFile) {
+    document.getElementById('rx-filename').textContent = rxFile.name;
+    document.getElementById('btn-rx-process').disabled = false;
+  }
+}
+function handleDrop(e) {
+  e.preventDefault();
+  document.getElementById('upload-area').classList.remove('dragover');
+  const f = e.dataTransfer.files[0];
+  if (f) {
+    rxFile = f;
+    document.getElementById('rx-filename').textContent = f.name;
+    document.getElementById('btn-rx-process').disabled = false;
+  }
+}
+function handleDragOver(e) { e.preventDefault(); document.getElementById('upload-area').classList.add('dragover'); }
+function handleDragLeave()  { document.getElementById('upload-area').classList.remove('dragover'); }
+
+async function processPrescription() {
+  if (!rxFile) return;
+  const btn = document.getElementById('btn-rx-process');
+  btn.disabled = true;
+  btn.innerHTML = spinner('Processing…');
+  document.getElementById('rx-result-card').style.display = 'none';
+  setStatus(spinner('Running Gemma 4 vision OCR…'));
+
+  const form = new FormData();
+  form.append('image', rxFile, rxFile.name);
+
+  try {
+    const res = await fetch('/api/prescription', { method: 'POST', body: form });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Server error');
+    renderPrescription(data);
+    setStatus('Prescription extracted.', 'ok');
+  } catch (e) {
+    setStatus('Prescription error: ' + e.message, 'err');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Process Prescription';
+  }
+}
+
+function renderPrescription(data) {
+  document.getElementById('rx-meta').innerHTML = `
+    <div class="rx-meta-item"><div class="rx-meta-label">Doctor</div><div class="rx-meta-val">${esc(data.doctor_name||'—')}</div></div>
+    <div class="rx-meta-item"><div class="rx-meta-label">Patient</div><div class="rx-meta-val">${esc(data.patient_name||'—')}</div></div>
+    <div class="rx-meta-item"><div class="rx-meta-label">Date</div><div class="rx-meta-val">${esc(data.date||'—')}</div></div>
+    <div class="rx-meta-item"><div class="rx-meta-label">Notes</div><div class="rx-meta-val">${esc(data.notes||'—')}</div></div>
+  `;
+  document.getElementById('rx-medicines').innerHTML = (data.medicines||[]).map((m,i)=>`
+    <tr>
+      <td>${i+1}</td>
+      <td><strong>${esc(m.name)}</strong></td>
+      <td>${esc(m.dosage)}</td>
+      <td>${esc(m.form)}</td>
+      <td>${esc(m.frequency)}</td>
+      <td>${esc(m.duration)}</td>
+      <td>${esc(m.instructions)}</td>
+    </tr>
+  `).join('');
+  document.getElementById('rx-result-card').style.display = 'block';
+}
+
+// ─── Reassurance phrases ──────────────────────────────────────────────────────
+let selectedPhrase = null;
+
+async function loadPhrases() {
+  try {
+    const res = await fetch('/api/phrases');
+    const phrases = await res.json();
+    document.getElementById('phrase-grid').innerHTML = phrases.map((p,i)=>`
+      <button class="phrase-btn" id="phrase-btn-${i}" onclick="selectPhrase(${i}, this)">
+        <span class="phrase-cat cat-${p.category}">${p.category}</span>
+        <span>${esc(p.phrase)}</span>
+      </button>
+    `).join('');
+    window._phrases = phrases;
+  } catch (e) {
+    console.error('Failed to load phrases', e);
+  }
+}
+
+function selectPhrase(idx, el) {
+  document.querySelectorAll('.phrase-btn').forEach(b => b.classList.remove('selected'));
+  el.classList.add('selected');
+  selectedPhrase = window._phrases[idx].phrase;
+  translatePhrase();
+}
+
+async function translatePhrase() {
+  if (!selectedPhrase) return;
+  const lang = document.getElementById('reassure-lang').value;
+  const origEl  = document.getElementById('reassure-original');
+  const transEl = document.getElementById('reassure-translated');
+  const card    = document.getElementById('reassure-result-card');
+
+  origEl.textContent = selectedPhrase;
+  transEl.innerHTML  = spinner('Translating…');
+  setSpeakBtn('speak-reassure', false);
+  card.style.display = 'block';
+  setStatus(spinner('Translating reassurance phrase…'));
+
+  try {
+    const res = await fetch('/api/reassure', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phrase: selectedPhrase, language: lang }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Server error');
+
+    const translated = data.translated || '—';
+    transEl.textContent = translated;
+    setSpeakBtn('speak-reassure', true);
+
+    // Auto-speak so the patient hears the reassurance immediately
+    if (translated !== '—') {
+      ttsSpeak(translated, lang);
+    }
+    setStatus('Translation ready.', 'ok');
+  } catch (e) {
+    transEl.textContent = '⚠ ' + e.message;
+    setStatus('Reassure error: ' + e.message, 'err');
+  }
+}
+
+document.getElementById('reassure-lang').addEventListener('change', translatePhrase);
+
+// ─── Health check ─────────────────────────────────────────────────────────────
+async function checkHealth() {
+  try {
+    const res = await fetch('/api/health');
+    const data = await res.json();
+    if (data.ok) {
+      const all = Object.values(data.models || {}).every(Boolean);
+      setStatus(
+        all
+          ? 'Ollama OK · Gemma 4 ready.'
+          : 'Ollama OK · models missing — run: ollama pull gemma4:e2b && ollama pull gemma4:e4b',
+        all ? 'ok' : 'warn'
+      );
+    } else {
+      setStatus('Ollama not reachable — run: ollama serve', 'err');
+    }
+  } catch {
+    setStatus('Cannot reach server — is pdb server running?', 'err');
+  }
+}
+
+// ─── Utilities ────────────────────────────────────────────────────────────────
+function esc(s) {
+  return String(s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function spinner(msg) { return `<span class="spinner"></span>${msg||''}`; }
+function setBox(id, html) { const el = document.getElementById(id); if (el) el.innerHTML = html; }
+function setStatus(msg, type) {
+  const el = document.getElementById('status-bar');
+  el.innerHTML = msg;
+  el.className = 'status-bar' + (type ? ' status-' + type : '');
+}
+
+// ─── Init ─────────────────────────────────────────────────────────────────────
+checkHealth();
+loadPhrases();
+</script>
+</body>
+</html>
