@@ -59,8 +59,8 @@ MODEL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 # Ollama (Phase 2+) — local inference, nothing leaves the device
 # ---------------------------------------------------------------------------
 OLLAMA_HOST: str = "http://localhost:11434"
-OLLAMA_TIMEOUT: int = 120            # seconds -- fast translation (gemma4:e2b)
-OLLAMA_TIMEOUT_REASONING: int = 600  # seconds -- triage/OCR (vision is slow on CPU)
+OLLAMA_TIMEOUT: int = 180            # seconds -- fast translation (gemma4:e2b)
+OLLAMA_TIMEOUT_REASONING: int = 900  # seconds -- triage/OCR (vision is slow on CPU)
 
 # Web server (Phase 6 UI)
 WEB_HOST: str = "127.0.0.1"
@@ -129,3 +129,48 @@ INFERENCE_POOL_SIZE: int = 3
 #
 # Preloading runs in a ThreadPoolExecutor so all languages load simultaneously.
 TTS_PREWARM_LANGS: list[str] = []  # change to ["hi","te","kn","ta"] for eager load
+
+
+# ---------------------------------------------------------------------------
+# Configuration validation
+# ---------------------------------------------------------------------------
+
+def validate_settings() -> list[str]:
+    """Check that settings are reasonable; return a list of warnings (empty = OK)."""
+    warnings: list[str] = []
+
+    if OLLAMA_TIMEOUT <= 0:
+        warnings.append(f"OLLAMA_TIMEOUT must be positive, got {OLLAMA_TIMEOUT}")
+    if OLLAMA_TIMEOUT_REASONING <= 0:
+        warnings.append(
+            f"OLLAMA_TIMEOUT_REASONING must be positive, got {OLLAMA_TIMEOUT_REASONING}"
+        )
+    if OLLAMA_TIMEOUT_REASONING < OLLAMA_TIMEOUT:
+        warnings.append(
+            f"OLLAMA_TIMEOUT_REASONING ({OLLAMA_TIMEOUT_REASONING}) is less than "
+            f"OLLAMA_TIMEOUT ({OLLAMA_TIMEOUT}); reasoning tasks need more time"
+        )
+
+    # Validate model names match the required gemma4:* pattern
+    # (import here to avoid circular dependency at module level)
+    try:
+        from core.engine import MODELS
+        for mode, model_tag in MODELS.items():
+            if not model_tag.startswith("gemma4:"):
+                warnings.append(
+                    f"Model for {mode.value} is '{model_tag}' — "
+                    f"only gemma4:* tags are permitted"
+                )
+    except ImportError:
+        pass  # core.engine not available yet during early init
+
+    return warnings
+
+
+# Run validation at import time so misconfigurations are caught early.
+_settings_warnings = validate_settings()
+if _settings_warnings:
+    import logging as _logging
+    _settings_logger = _logging.getLogger(__name__)
+    for _w in _settings_warnings:
+        _settings_logger.warning("config/settings.py: %s", _w)
