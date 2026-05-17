@@ -89,15 +89,15 @@ class TestConstrainAndRenormalize:
         assert lang == "en"
         assert conf == 0.0
 
-    # ------------------------------------------------------------------ parametrize over 5 languages
+    # ------------------------------------------ parametrize over 5 languages
 
     @pytest.mark.parametrize("target", sorted(SUPPORTED_LANG_CODES))
     def test_each_supported_language_can_win(self, target: str) -> None:
-        """Each of the 5 supported codes can be detected as the winner."""
+        """Each of the 5 supported codes can be the winner."""
         probs: dict[str, float] = {target: 0.9}
         for other in SUPPORTED_LANG_CODES:
             if other != target:
                 probs[other] = 0.01
         lang, conf = constrain_and_renormalize(probs)
         assert lang == target
-        assert conf > 0.5   # dominant winner should have high renormalized confidence
+        assert conf > 0.5

@@ -15,11 +15,9 @@ import time
 from pathlib import Path
 
 import numpy as np
-import pytest
 
 from audio.recorder import Recorder
-from config.settings import SAMPLE_RATE, MIN_RECORDING_SECONDS
-
+from config.settings import MIN_RECORDING_SECONDS, SAMPLE_RATE
 
 # ---------------------------------------------------------------------------
 # Helpers

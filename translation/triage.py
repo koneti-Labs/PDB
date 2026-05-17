@@ -23,7 +23,6 @@ from typing import TypedDict
 from config.languages import LANGUAGE_DISPLAY
 from core.engine import GemmaEngine
 
-
 # ---------------------------------------------------------------------------
 # Result type
 # ---------------------------------------------------------------------------

@@ -13,7 +13,6 @@ from __future__ import annotations
 from config.languages import LANGUAGE_DISPLAY
 from core.engine import GemmaEngine
 
-
 # Ordered from most urgent to informational
 REASSURANCE_PHRASES: list[tuple[str, str]] = [
     ("URGENT",  "Help is coming. You are safe."),

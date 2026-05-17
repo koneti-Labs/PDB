@@ -1,6 +1,7 @@
 import sys
-from pathlib import Path
 import time
+from pathlib import Path
+
 import keyboard
 from rich.console import Console
 from rich.panel import Panel
@@ -9,7 +10,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from arch.audio_handler import AudioHandler
 from arch.translation_service import TranslationService
-from arch.config import SUPPORTED_LANGUAGES
 
 console = Console()
 
@@ -60,7 +60,7 @@ def main():
             # Translate using Gemma 4
             console.print("[cyan]Translating to Doctor (Gemma 4 2B)...[/cyan]")
             doctor_version = translator.patient_to_doctor(
-                result['transcription'], 
+                result['transcription'],
                 result['language_name']
             )
 

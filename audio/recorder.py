@@ -20,8 +20,8 @@ from pathlib import Path
 
 import numpy as np
 import sounddevice as sd
-from scipy.io.wavfile import write as wav_write
 from rich.console import Console
+from scipy.io.wavfile import write as wav_write
 
 from config.settings import (
     AUDIO_TEMP_DIR,
@@ -112,7 +112,8 @@ class Recorder:
                 elapsed = time.monotonic() - start
                 if elapsed >= MAX_RECORDING_SECONDS:
                     console.print(
-                        f"[yellow]⚠  Max recording time ({MAX_RECORDING_SECONDS}s) reached.[/yellow]"
+                        f"[yellow]⚠  Max recording time "
+                        f"({MAX_RECORDING_SECONDS}s) reached.[/yellow]"
                     )
                     break
                 time.sleep(0.05)

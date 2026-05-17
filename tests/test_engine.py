@@ -7,10 +7,11 @@ Ollama is mocked at the call site so no Ollama daemon is required.
 """
 from __future__ import annotations
 
-import pytest
 from unittest.mock import MagicMock
 
-from core.engine import GemmaEngine, InferenceMode, MODELS
+import pytest
+
+from core.engine import MODELS, GemmaEngine, InferenceMode
 
 
 def _engine_with_mock(response_text: str = "test response") -> tuple[GemmaEngine, MagicMock]:
@@ -33,7 +34,8 @@ class TestModelRouting:
     def test_reasoning_extraction_uses_4b(self) -> None:
         engine, mock_client = _engine_with_mock()
         engine.generate("hello", mode=InferenceMode.REASONING_EXTRACTION)
-        assert mock_client.generate.call_args.kwargs["model"] == MODELS[InferenceMode.REASONING_EXTRACTION]
+        expected = MODELS[InferenceMode.REASONING_EXTRACTION]
+        assert mock_client.generate.call_args.kwargs["model"] == expected
 
     def test_models_dict_only_contains_gemma4(self) -> None:
         for tag in MODELS.values():
@@ -42,7 +44,8 @@ class TestModelRouting:
     def test_default_mode_is_fast_translation(self) -> None:
         engine, mock_client = _engine_with_mock()
         engine.generate("hello")
-        assert mock_client.generate.call_args.kwargs["model"] == MODELS[InferenceMode.FAST_TRANSLATION]
+        expected = MODELS[InferenceMode.FAST_TRANSLATION]
+        assert mock_client.generate.call_args.kwargs["model"] == expected
 
 
 class TestResponseHandling:
@@ -78,7 +81,7 @@ class TestResponseHandling:
 class TestPhaseStubs:
 
     def test_emergency_triage_implemented_phase3(self) -> None:
-        """emergency_triage() is now implemented in Phase 3 -- must not raise NotImplementedError."""
+        """emergency_triage() is implemented in Phase 3."""
         import json
         engine, mock_client = _engine_with_mock()
         mock_client.generate.return_value = {"response": json.dumps({
@@ -95,7 +98,8 @@ class TestPhaseStubs:
 
     def test_transcribe_prescription_implemented_phase4(self) -> None:
         """transcribe_prescription() is implemented in Phase 4 via multimodal vision."""
-        import base64, tempfile, os
+        import os
+        import tempfile
         # Create a tiny 1-pixel PNG to avoid file-not-found
         tiny_png = (
             b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01"
@@ -137,7 +141,10 @@ class TestConnectivityCheck:
     def test_returns_dict_keyed_by_model_tag(self) -> None:
         engine, _ = _engine_with_mock()
         engine._client.list.return_value = {
-            "models": [{"model": "gemma4:e2b"}, {"model": MODELS[InferenceMode.REASONING_EXTRACTION]}]
+            "models": [
+                {"model": "gemma4:e2b"},
+                {"model": MODELS[InferenceMode.REASONING_EXTRACTION]},
+            ]
         }
         result = engine.check_connectivity()
         assert set(result.keys()) == set(MODELS.values())

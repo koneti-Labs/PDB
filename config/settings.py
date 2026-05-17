@@ -71,7 +71,8 @@ WEB_PORT: int = 5000
 # ---------------------------------------------------------------------------
 GEMMA_TEMPERATURE: float = 0.2     # low = more deterministic translations
 GEMMA_TOP_P: float = 0.9
-GEMMA_NUM_CTX: int = 8192          # full context window for reasoning/OCR (raised to fit image + JSON output)
+# full context window for reasoning/OCR (raised to fit image + JSON output)
+GEMMA_NUM_CTX: int = 8192
 GEMMA_NUM_CTX_FAST: int = 2048     # context window for translation/reassure.
                                    # Root-cause fix: 512 was too small for gemma4:e2b — the model
                                    # was truncating context and returning empty output.  2048 gives
@@ -79,8 +80,10 @@ GEMMA_NUM_CTX_FAST: int = 2048     # context window for translation/reassure.
 
 # Output length caps -- prevents the model from running off and producing
 # multi-paragraph trailing chatter that adds seconds per request.
-GEMMA_NUM_PREDICT_FAST: int = 512        # raised from 256; accommodates longer Indic translations
-GEMMA_NUM_PREDICT_REASONING: int = 4096  # triage JSON + prescription OCR (raised from 1024 to prevent truncation)
+# raised from 256; accommodates longer Indic translations
+GEMMA_NUM_PREDICT_FAST: int = 512
+# triage JSON + prescription OCR (raised from 1024 to prevent truncation)
+GEMMA_NUM_PREDICT_REASONING: int = 4096
 
 # Hold the model in (V)RAM between calls.  Without this Ollama unloads
 # after ~5 minutes idle (its default), and the next request pays a ~20-60s

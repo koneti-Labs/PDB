@@ -105,9 +105,12 @@ def cmd_triage(args: argparse.Namespace) -> None:
             # Show transcript
             lang_label = format_language_result(result["language"], result["confidence"])
             low_conf = result["confidence"] < CONFIDENCE_THRESHOLD
+            low_warn = (
+                "  [yellow]⚠ low confidence — results may be imprecise[/yellow]"
+                if low_conf else ""
+            )
             console.print(
-                f"  Detected: [bold]{lang_label}[/bold]"
-                + ("  [yellow]⚠ low confidence — results may be imprecise[/yellow]" if low_conf else "")
+                f"  Detected: [bold]{lang_label}[/bold]" + low_warn
             )
             console.print(f"  Transcript: [italic]{result['text']}[/italic]\n")
 
@@ -186,10 +189,12 @@ def _display_triage_card(triage: TriageResult, lang_code: str) -> None:
     table.add_row("Chief Complaint", triage["chief_complaint"])
     table.add_row("Severity", Text(sev_label, style=sev_style))
     table.add_row("Duration", triage["duration"])
-    table.add_row(
-        "Symptoms",
-        "\n".join(f"• {s}" for s in triage["symptoms"]) if triage["symptoms"] else "[dim]none reported[/dim]",
+    symptoms_text = (
+        "\n".join(f"• {s}" for s in triage["symptoms"])
+        if triage["symptoms"]
+        else "[dim]none reported[/dim]"
     )
+    table.add_row("Symptoms", symptoms_text)
     table.add_row(
         "Vitals Mentioned",
         "\n".join(f"• {v}" for v in triage["vitals_mentioned"])

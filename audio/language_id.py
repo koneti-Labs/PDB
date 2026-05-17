@@ -19,7 +19,6 @@ language is *within our 5-code constraint*, not globally.
 from __future__ import annotations
 
 from config.languages import (
-    CONFIDENCE_THRESHOLD,
     LANGUAGE_DISPLAY,
     LANGUAGE_NATIVE,
     SUPPORTED_LANG_CODES,

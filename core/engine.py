@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 # notebook patch cell or by server.py self-healing take immediate effect.
 # Previously the "from … import" approach captured GEMMA_NUM_CTX_FAST=512
 # at import time, making runtime patches invisible to generate().
-import config.settings as _cfg
+import config.settings as _cfg  # noqa: E402
 
 console = Console()
 
@@ -428,6 +428,7 @@ class GemmaEngine:
             Raw JSON string from Gemma 4.
         """
         import base64
+
         from translation.prompts import PRESCRIPTION_OCR_PROMPT
 
         with open(image_path, "rb") as f:
@@ -600,7 +601,6 @@ class GemmaEngine:
         Uses .models attribute on the Pydantic ListResponse object returned
         by ollama.Client.list() (SDK >= 0.2).
         """
-        results: dict[str, bool] = {}
         try:
             models_resp = self._client.list()
             # models_resp is a ListResponse (SubscriptableBaseModel).

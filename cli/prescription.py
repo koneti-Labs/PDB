@@ -22,7 +22,6 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.rule import Rule
 from rich.table import Table
-from rich.text import Text
 
 from core.engine import GemmaEngine
 from translation.prescription import PrescriptionResult, PrescriptionService
@@ -44,7 +43,10 @@ def cmd_prescription(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     if path.suffix.lower() not in {".jpg", ".jpeg", ".png", ".bmp", ".webp"}:
-        console.print("[yellow]Warning: file may not be a supported image type (JPEG/PNG recommended).[/yellow]")
+        console.print(
+            "[yellow]Warning: file may not be a supported image type"
+            " (JPEG/PNG recommended).[/yellow]"
+        )
 
     engine = GemmaEngine()
     service = PrescriptionService(engine)
