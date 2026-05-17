@@ -50,14 +50,14 @@ def cmd_prescription(args: argparse.Namespace) -> None:
     service = PrescriptionService(engine)
 
     console.print()
-    console.print(Rule("[bold cyan]PatientDoctorBridge — Phase 4: Prescription OCR[/bold cyan]"))
+    console.print(Rule("[bold cyan]PatientDoctorBridge -- Phase 4: Prescription OCR[/bold cyan]"))
     console.print("[dim]Extracting medicine information via Gemma 4 multimodal vision.[/dim]\n")
 
     _check_ollama(engine)
     console.print("[dim]Loading Gemma 4 models into VRAM...[/dim]")
     engine.warmup()
 
-    console.print(f"[cyan]Processing image: {path.name} …[/cyan]")
+    console.print(f"[cyan]Processing image: {path.name} ...[/cyan]")
     try:
         result = service.extract(str(path))
     except ValueError as exc:
@@ -77,7 +77,6 @@ def cmd_prescription(args: argparse.Namespace) -> None:
 def _display_prescription_card(result: PrescriptionResult, filename: str) -> None:
     """Render a rich prescription card."""
 
-    # ── Header info ──────────────────────────────────────────────────────────
     meta_table = Table(show_header=False, box=None, padding=(0, 1))
     meta_table.add_column("Field", style="bold dim", width=18)
     meta_table.add_column("Value", style="white")
@@ -92,7 +91,6 @@ def _display_prescription_card(result: PrescriptionResult, filename: str) -> Non
     console.print(Panel(meta_table, title="[bold cyan]Prescription Details[/bold cyan]",
                         border_style="cyan", padding=(1, 2)))
 
-    # ── Medicines table ──────────────────────────────────────────────────────
     medicines = result["medicines"]
     if not medicines:
         console.print("[yellow]No medicines found in the prescription.[/yellow]")

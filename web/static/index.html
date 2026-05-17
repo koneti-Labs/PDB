@@ -302,11 +302,11 @@
       <span class="timer" id="timer-patient">0:00</span>
     </div>
     <div class="result-group">
-      <div class="result-label">Transcript</div>
+      <div class="result-label" id="patient-transcript-label">Transcript (patient language)</div>
       <div class="result-box" id="patient-transcript">—</div>
     </div>
     <div class="result-group">
-      <div class="result-label">
+      <div class="result-label" id="patient-translation-label">
         Translation for Doctor (English)
         <button class="btn-speak" id="speak-patient-trans" onclick="speakEl('patient-translation','en')">🔊 Speak</button>
       </div>
@@ -363,6 +363,17 @@
       Record the patient speaking in any supported language.
       Gemma 4 auto-detects the language and extracts structured triage information.
     </p>
+    <div class="lang-row" style="margin-bottom:14px;">
+      <label>Patient language:</label>
+      <select id="triage-lang">
+        <option value="auto" selected>Auto-detect</option>
+        <option value="hi">Hindi</option>
+        <option value="te">Telugu</option>
+        <option value="kn">Kannada</option>
+        <option value="ta">Tamil</option>
+        <option value="en">English</option>
+      </select>
+    </div>
     <div class="record-row">
       <button class="btn btn-danger" id="btn-rec-triage" onclick="startRecord('triage')">
         &#9679; Record Patient
@@ -396,6 +407,17 @@
       <p>Click to upload or drag &amp; drop a prescription image</p>
       <p style="font-size:.78rem;margin-top:4px;">JPEG, PNG, WebP supported</p>
     </div>
+    <div class="lang-row" style="margin-top:14px;">
+      <label>Translate summary to:</label>
+      <select id="rx-lang">
+        <option value="hi">Hindi</option>
+        <option value="te">Telugu</option>
+        <option value="kn">Kannada</option>
+        <option value="ta">Tamil</option>
+        <option value="en">English (no translation)</option>
+      </select>
+      <span style="font-size:0.75rem;color:#64748b;">Patient-friendly summary in their language</span>
+    </div>
     <div style="margin-top:12px;display:flex;gap:10px;align-items:center;">
       <button class="btn btn-purple" id="btn-rx-process" onclick="processPrescription()" disabled>
         Process Prescription
@@ -406,7 +428,7 @@
   <div class="card" id="rx-result-card" style="display:none;">
     <h2>Prescription Details</h2>
     <div class="rx-meta" id="rx-meta"></div>
-    <div class="result-label" style="margin-bottom:8px;">Medicines</div>
+    <div class="result-label" style="margin-bottom:8px;">Medicines (English)</div>
     <table class="rx-table">
       <thead>
         <tr>
@@ -416,6 +438,16 @@
       </thead>
       <tbody id="rx-medicines"></tbody>
     </table>
+    <div id="rx-translation-block" style="display:none;margin-top:16px;">
+      <div class="result-label" style="margin-bottom:6px;">
+        <span id="rx-summary-label">Patient Summary</span>
+        <button class="btn-speak visible" id="speak-rx-summary"
+                onclick="speakRxSummary()">
+          🔊 Speak
+        </button>
+      </div>
+      <div class="result-box" id="rx-translated-summary" style="font-size:1rem;line-height:1.8;"></div>
+    </div>
   </div>
 </div>
 
@@ -446,7 +478,7 @@
     <div class="result-group">
       <div class="result-label">
         Translation
-        <button class="btn-speak" id="speak-reassure" onclick="speakEl('reassure-translated', document.getElementById('reassure-lang').value)">🔊 Speak</button>
+        <button class="btn-speak" id="speak-reassure" onclick="speakEl('reassure-translated', _reassureLang)">🔊 Speak</button>
       </div>
       <div class="result-box" id="reassure-translated" style="font-size:1.1rem;"></div>
     </div>
@@ -525,240 +557,14 @@ function stopTimer(role) {
   document.getElementById('timer-' + role).textContent = '0:00';
 }
 
-// ─── Audio upload & processing ───────────────────────────────────────────────
-async function uploadAudio(role, chunks) {
-  const blob = new Blob(chunks, { type: 'audio/webm' });
-  const form = new FormData();
-  form.append('audio', blob, 'recording.webm');
 
-  let endpoint, lang;
-
-  if (role === 'patient') {
-    lang = document.getElementById('bridge-lang').value;
-    endpoint = '/api/bridge/patient';
-    setBox('patient-transcript', spinner('Transcribing…'));
-    setBox('patient-translation', spinner('Translating with Gemma 4…'));
-    setSpeakBtn('speak-patient-trans', false);
-  } else if (role === 'doctor') {
-    lang = document.getElementById('doctor-lang').value;
-    endpoint = '/api/bridge/doctor';
-    setBox('doctor-transcript', spinner('Transcribing…'));
-    setBox('doctor-translation', spinner('Translating with Gemma 4…'));
-    setSpeakBtn('speak-doctor-trans', false);
-    document.getElementById('speaking-badge').style.display = 'none';
-  } else if (role === 'triage') {
-    lang = 'auto';
-    endpoint = '/api/triage';
-    document.getElementById('triage-result-card').style.display = 'none';
-    setStatus(spinner('Transcribing + extracting triage data…'));
-  }
-
-  form.append('language', lang);
-
-  try {
-    const res = await fetch(endpoint, { method: 'POST', body: form });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Server error');
-
-    if (role === 'patient') {
-      setBox('patient-transcript', data.transcript || '(empty)');
-      setBox('patient-translation', data.translation || '(empty)');
-      setSpeakBtn('speak-patient-trans', true);
-
-      // ── Auto-sync detected language to doctor-lang selector ──────────────
-      const detectedLang = data.detected_language;
-      if (detectedLang) {
-        currentPatientLang = detectedLang;
-        const sel = document.getElementById('doctor-lang');
-        if ([...sel.options].some(o => o.value === detectedLang)) {
-          sel.value = detectedLang;
-        }
-        const badge = document.getElementById('detected-lang-badge');
-        badge.textContent = '✓ Auto-detected: ' + (LANG_NAMES[detectedLang] || detectedLang);
-        badge.style.display = 'inline-block';
-      }
-      setStatus('Patient transcribed. Now record the doctor\'s response.', 'ok');
-
-    } else if (role === 'doctor') {
-      setBox('doctor-transcript', data.transcript || '(empty)');
-      const translation = data.translation || '(empty)';
-      setBox('doctor-translation', translation);
-      setSpeakBtn('speak-doctor-trans', true);
-
-      // ── Auto-speak translation so patient hears it ───────────────────────
-      if (translation && translation !== '(empty)') {
-        const speakLang = data.target_language || currentPatientLang;
-        showSpeakingBadge(true);
-        ttsSpeak(translation, speakLang, () => showSpeakingBadge(false));
-      }
-      setStatus('Bridge ready.', 'ok');
-
-    } else if (role === 'triage') {
-      renderTriage(data);
-      setStatus('Triage complete.', 'ok');
-    }
-  } catch (e) {
-    if (role === 'patient') {
-      setBox('patient-transcript', '⚠ ' + e.message);
-      setBox('patient-translation', '—');
-    } else if (role === 'doctor') {
-      setBox('doctor-transcript', '⚠ ' + e.message);
-      setBox('doctor-translation', '—');
-    } else if (role === 'triage') {
-      setStatus('Triage error: ' + e.message, 'err');
-    }
-  }
-}
-
-// ─── TTS via Web Speech API ──────────────────────────────────────────────────
-/**
- * Speak text of element #id in the given ISO 639-1 language.
- */
-function speakEl(id, langCode) {
-  const text = document.getElementById(id)?.textContent?.trim();
-  if (!text || text === '—' || text === '(empty)') return;
-  ttsSpeak(text, langCode);
-}
-
-/**
- * ttsSpeak(text, langCode, onEnd?)
- * Uses the browser's Web Speech API (offline, no external calls).
- * Falls back silently if speechSynthesis is unavailable.
- */
-function ttsSpeak(text, langCode, onEnd) {
-  if (!window.speechSynthesis) {
-    if (onEnd) onEnd();
-    return;
-  }
-  window.speechSynthesis.cancel();
-
-  const utt = new SpeechSynthesisUtterance(text);
-  utt.lang  = LANG_BCP47[langCode] || 'hi-IN';
-  utt.rate  = 0.9;
-  utt.pitch = 1.0;
-
-  // Pick best matching voice if available
-  const voices = window.speechSynthesis.getVoices();
-  const base = (LANG_BCP47[langCode] || 'hi-IN').split('-')[0];
-  const voice = voices.find(v => v.lang.startsWith(base));
-  if (voice) utt.voice = voice;
-
-  utt.onend   = () => { if (onEnd) onEnd(); };
-  utt.onerror = () => { if (onEnd) onEnd(); };
-
-  window.speechSynthesis.speak(utt);
-}
-
-// Chrome loads voices asynchronously; trigger a refresh on change
-if (window.speechSynthesis) {
-  window.speechSynthesis.onvoiceschanged = () => {};
-}
-
-function setSpeakBtn(id, visible) {
-  const el = document.getElementById(id);
-  if (!el) return;
-  el.classList.toggle('visible', visible);
-}
-
-function showSpeakingBadge(show) {
-  document.getElementById('speaking-badge').style.display = show ? 'inline' : 'none';
-}
-
-// ─── Triage rendering ────────────────────────────────────────────────────────
-function renderTriage(data) {
-  const card = document.getElementById('triage-result-card');
-  const t = data.triage || {};
-
-  document.getElementById('triage-alert').innerHTML = t.needs_immediate_attention
-    ? '<div class="alert-banner">⚠ IMMEDIATE ATTENTION REQUIRED ⚠</div>' : '';
-
-  const sevCls = { critical:'badge-critical', severe:'badge-severe', moderate:'badge-moderate', mild:'badge-mild' }[t.severity] || '';
-  const symptoms = (t.symptoms || []).map(s => '• ' + s).join('\n') || 'none reported';
-  const vitals   = (t.vitals_mentioned || []).map(v => '• ' + v).join('\n') || 'none';
-
-  document.getElementById('triage-grid').innerHTML = `
-    <span class="triage-key">Transcript</span>   <span class="triage-val">${esc(data.transcript || '—')}</span>
-    <span class="triage-key">Chief Complaint</span><span class="triage-val">${esc(t.chief_complaint || '—')}</span>
-    <span class="triage-key">Severity</span>      <span class="triage-val ${sevCls}">${esc(t.severity || '—')}</span>
-    <span class="triage-key">Duration</span>      <span class="triage-val">${esc(t.duration || '—')}</span>
-    <span class="triage-key">Symptoms</span>      <span class="triage-val" style="white-space:pre-line">${esc(symptoms)}</span>
-    <span class="triage-key">Vitals</span>        <span class="triage-val" style="white-space:pre-line">${esc(vitals)}</span>
-    <span class="triage-key">Language</span>      <span class="triage-val">${esc(LANG_NAMES[data.language] || data.language || '—')}</span>
-  `;
-  card.style.display = 'block';
-}
-
-// ─── Prescription upload ─────────────────────────────────────────────────────
-let rxFile = null;
-
-function handleFileSelect(e) {
-  rxFile = e.target.files[0];
-  if (rxFile) {
-    document.getElementById('rx-filename').textContent = rxFile.name;
-    document.getElementById('btn-rx-process').disabled = false;
-  }
-}
-function handleDrop(e) {
-  e.preventDefault();
-  document.getElementById('upload-area').classList.remove('dragover');
-  const f = e.dataTransfer.files[0];
-  if (f) {
-    rxFile = f;
-    document.getElementById('rx-filename').textContent = f.name;
-    document.getElementById('btn-rx-process').disabled = false;
-  }
-}
-function handleDragOver(e) { e.preventDefault(); document.getElementById('upload-area').classList.add('dragover'); }
-function handleDragLeave()  { document.getElementById('upload-area').classList.remove('dragover'); }
-
-async function processPrescription() {
-  if (!rxFile) return;
-  const btn = document.getElementById('btn-rx-process');
-  btn.disabled = true;
-  btn.innerHTML = spinner('Processing…');
-  document.getElementById('rx-result-card').style.display = 'none';
-  setStatus(spinner('Running Gemma 4 vision OCR…'));
-
-  const form = new FormData();
-  form.append('image', rxFile, rxFile.name);
-
-  try {
-    const res = await fetch('/api/prescription', { method: 'POST', body: form });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Server error');
-    renderPrescription(data);
-    setStatus('Prescription extracted.', 'ok');
-  } catch (e) {
-    setStatus('Prescription error: ' + e.message, 'err');
-  } finally {
-    btn.disabled = false;
-    btn.textContent = 'Process Prescription';
-  }
-}
-
-function renderPrescription(data) {
-  document.getElementById('rx-meta').innerHTML = `
-    <div class="rx-meta-item"><div class="rx-meta-label">Doctor</div><div class="rx-meta-val">${esc(data.doctor_name||'—')}</div></div>
-    <div class="rx-meta-item"><div class="rx-meta-label">Patient</div><div class="rx-meta-val">${esc(data.patient_name||'—')}</div></div>
-    <div class="rx-meta-item"><div class="rx-meta-label">Date</div><div class="rx-meta-val">${esc(data.date||'—')}</div></div>
-    <div class="rx-meta-item"><div class="rx-meta-label">Notes</div><div class="rx-meta-val">${esc(data.notes||'—')}</div></div>
-  `;
-  document.getElementById('rx-medicines').innerHTML = (data.medicines||[]).map((m,i)=>`
-    <tr>
-      <td>${i+1}</td>
-      <td><strong>${esc(m.name)}</strong></td>
-      <td>${esc(m.dosage)}</td>
-      <td>${esc(m.form)}</td>
-      <td>${esc(m.frequency)}</td>
-      <td>${esc(m.duration)}</td>
-      <td>${esc(m.instructions)}</td>
-    </tr>
-  `).join('');
-  document.getElementById('rx-result-card').style.display = 'block';
-}
-
-// ─── Reassurance phrases ──────────────────────────────────────────────────────
+// ── Reassure state ─────────────────────────────────────────────────────────
 let selectedPhrase = null;
+let _reassureAbort = null;    // AbortController for in-flight reassure fetch
+let _reassureLang  = 'hi';    // language of the last successful translation
+let _rxSummaryLang = 'hi';    // language used when summarising prescription
+
+document.addEventListener('DOMContentLoaded', loadPhrases);
 
 async function loadPhrases() {
   try {
@@ -785,80 +591,378 @@ function selectPhrase(idx, el) {
 
 async function translatePhrase() {
   if (!selectedPhrase) return;
-  const lang = document.getElementById('reassure-lang').value;
-  const origEl  = document.getElementById('reassure-original');
-  const transEl = document.getElementById('reassure-translated');
-  const card    = document.getElementById('reassure-result-card');
+
+  // Cancel any in-flight request from a previous language selection.
+  // Without this, rapid language switching causes multiple concurrent fetches
+  // and the last one to COMPLETE (not the last one to START) wins — showing
+  // a stale translation in whatever language happened to finish last.
+  if (_reassureAbort) {
+    _reassureAbort.abort();
+  }
+  _reassureAbort = new AbortController();
+  const { signal } = _reassureAbort;
+
+  // Capture the language AT REQUEST TIME so the closure is stable even if
+  // the selector changes again while the fetch is in flight.
+  const lang     = document.getElementById('reassure-lang').value;
+  const langName = LANG_NAMES[lang] || lang;
+
+  const origEl   = document.getElementById('reassure-original');
+  const transEl  = document.getElementById('reassure-translated');
+  const card     = document.getElementById('reassure-result-card');
+  const speakBtn = document.getElementById('speak-reassure');
 
   origEl.textContent = selectedPhrase;
-  transEl.innerHTML  = spinner('Translating…');
+  transEl.innerHTML  = spinner(`Translating to ${langName}…`);
   setSpeakBtn('speak-reassure', false);
   card.style.display = 'block';
-  setStatus(spinner('Translating reassurance phrase…'));
 
   try {
     const res = await fetch('/api/reassure', {
-      method: 'POST',
+      method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ phrase: selectedPhrase, language: lang }),
+      body:    JSON.stringify({ phrase: selectedPhrase, language: lang }),
+      signal,
     });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Server error');
 
-    const translated = data.translated || '—';
-    transEl.textContent = translated;
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText }));
+      transEl.innerHTML = `<span class="text-danger">Error: ${err.error || res.statusText}</span>`;
+      return;
+    }
+
+    const data = await res.json();
+    transEl.textContent = data.translated || '(no translation)';
+
+    // Store the language used for THIS successful translation so the TTS
+    // button speaks in the right language even if the selector has changed.
+    _reassureLang = lang;
     setSpeakBtn('speak-reassure', true);
-
-    // Auto-speak so the patient hears the reassurance immediately
-    if (translated !== '—') {
-      ttsSpeak(translated, lang);
+  } catch (err) {
+    if (err.name === 'AbortError') {
+      // Silently discard — a newer request superseded this one.
+      return;
     }
-    setStatus('Translation ready.', 'ok');
-  } catch (e) {
-    transEl.textContent = '⚠ ' + e.message;
-    setStatus('Reassure error: ' + e.message, 'err');
+    transEl.innerHTML = `<span class="text-danger">Network error: ${err.message}</span>`;
   }
 }
 
-document.getElementById('reassure-lang').addEventListener('change', translatePhrase);
-
-// ─── Health check ─────────────────────────────────────────────────────────────
-async function checkHealth() {
-  try {
-    const res = await fetch('/api/health');
-    const data = await res.json();
-    if (data.ok) {
-      const all = Object.values(data.models || {}).every(Boolean);
-      setStatus(
-        all
-          ? 'Ollama OK · Gemma 4 ready.'
-          : 'Ollama OK · models missing — run: ollama pull gemma4:e2b && ollama pull gemma4:e4b',
-        all ? 'ok' : 'warn'
-      );
-    } else {
-      setStatus('Ollama not reachable — run: ollama serve', 'err');
-    }
-  } catch {
-    setStatus('Cannot reach server — is pdb server running?', 'err');
-  }
-}
-
-// ─── Utilities ────────────────────────────────────────────────────────────────
+// ── Prescription upload ──────────────────────────────────────────────────────
+// ── Helpers ──────────────────────────────────────────────────────────────────
 function esc(s) {
   return String(s)
-    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-}
-function spinner(msg) { return `<span class="spinner"></span>${msg||''}`; }
-function setBox(id, html) { const el = document.getElementById(id); if (el) el.innerHTML = html; }
-function setStatus(msg, type) {
-  const el = document.getElementById('status-bar');
-  el.innerHTML = msg;
-  el.className = 'status-bar' + (type ? ' status-' + type : '');
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
-// ─── Init ─────────────────────────────────────────────────────────────────────
-checkHealth();
-loadPhrases();
+function setStatus(msg, type) {
+  const bar = document.getElementById('status-bar');
+  if (!bar) return;
+  bar.textContent = msg;
+  bar.style.color = type === 'err' ? '#f87171' : type === 'ok' ? '#4ade80' : '#64748b';
+}
+
+// ── Prescription: file select / drag-drop ────────────────────────────────────
+function handleFileSelect(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  document.getElementById('rx-filename').textContent = file.name;
+  document.getElementById('btn-rx-process').disabled = false;
+}
+
+function handleDrop(event) {
+  event.preventDefault();
+  document.getElementById('upload-area').classList.remove('dragover');
+  const file = event.dataTransfer.files[0];
+  if (!file || !file.type.startsWith('image/')) return;
+  const dt = new DataTransfer();
+  dt.items.add(file);
+  document.getElementById('rx-file-input').files = dt.files;
+  document.getElementById('rx-filename').textContent = file.name;
+  document.getElementById('btn-rx-process').disabled = false;
+}
+
+function handleDragOver(event) {
+  event.preventDefault();
+  document.getElementById('upload-area').classList.add('dragover');
+}
+
+function handleDragLeave() {
+  document.getElementById('upload-area').classList.remove('dragover');
+}
+
+// ── Prescription: process + render ───────────────────────────────────────────
+async function processPrescription() {
+  const fileInput = document.getElementById('rx-file-input');
+  const lang      = document.getElementById('rx-lang').value;
+  if (!fileInput.files.length) { alert('Please select a prescription image first.'); return; }
+
+  const btn = document.getElementById('btn-rx-process');
+  btn.disabled    = true;
+  btn.textContent = 'Processing…';
+  setStatus('Processing prescription…', '');
+
+  const form = new FormData();
+  form.append('image',    fileInput.files[0]);
+  form.append('language', lang);
+
+  try {
+    const res  = await fetch('/api/prescription', { method: 'POST', body: form });
+    const data = await res.json();
+    if (data.error) {
+      setStatus('Prescription error: ' + data.error, 'err');
+    } else {
+      renderPrescription(data, lang);
+      setStatus('Prescription extracted' + (lang !== 'en' ? ' and translated.' : '.'), 'ok');
+    }
+  } catch (e) {
+    setStatus('Prescription error: ' + e.message, 'err');
+  } finally {
+    btn.disabled    = false;
+    btn.textContent = 'Process Prescription';
+  }
+}
+
+function renderPrescription(data, rxLang) {
+  _rxSummaryLang = rxLang || 'en';
+
+  const card = document.getElementById('rx-result-card');
+  card.style.display = 'block';
+
+  if (data.error) {
+    document.getElementById('rx-meta').innerHTML =
+      `<div style="color:#f87171">${esc(data.error)}</div>`;
+    return;
+  }
+
+  // Meta row
+  document.getElementById('rx-meta').innerHTML = `
+    <div class="rx-meta-item"><div class="rx-meta-label">Doctor</div>
+      <div class="rx-meta-val">${esc(data.doctor_name || '—')}</div></div>
+    <div class="rx-meta-item"><div class="rx-meta-label">Patient</div>
+      <div class="rx-meta-val">${esc(data.patient_name || '—')}</div></div>
+    <div class="rx-meta-item"><div class="rx-meta-label">Date</div>
+      <div class="rx-meta-val">${esc(data.date || '—')}</div></div>
+    <div class="rx-meta-item"><div class="rx-meta-label">Notes</div>
+      <div class="rx-meta-val">${esc(data.notes || '—')}</div></div>`;
+
+  // Medicines tbody
+  const meds = data.medicines || [];
+  document.getElementById('rx-medicines').innerHTML = meds.map((m, i) => `
+    <tr>
+      <td>${i + 1}</td>
+      <td>${esc(m.name        || '—')}</td>
+      <td>${esc(m.dosage      || '—')}</td>
+      <td>${esc(m.form        || '—')}</td>
+      <td>${esc(m.frequency   || '—')}</td>
+      <td>${esc(m.duration    || '—')}</td>
+      <td>${esc(m.instructions|| '—')}</td>
+    </tr>`).join('');
+
+  // Patient summary translation block
+  const langName  = LANG_NAMES[rxLang] || rxLang || 'Patient language';
+  const transBlock = document.getElementById('rx-translation-block');
+  const summaryEl  = document.getElementById('rx-translated-summary');
+  const labelEl    = document.getElementById('rx-summary-label');
+
+  if (data.translated_summary) {
+    if (labelEl)  labelEl.textContent = `Patient Summary (${langName})`;
+    summaryEl.textContent = data.translated_summary;
+    transBlock.style.display = 'block';
+  } else if (data.translation_error) {
+    if (labelEl)  labelEl.textContent = 'Summary';
+    summaryEl.innerHTML =
+      `<span style="color:#f59e0b">Translation to ${langName} failed: ${esc(data.translation_error)}</span>`;
+    transBlock.style.display = 'block';
+  } else {
+    transBlock.style.display = 'none';
+  }
+}
+
+function speakRxSummary() {
+  speakEl('rx-translated-summary', _rxSummaryLang);
+}
+
+// ── Audio upload (bridge + triage) ────────────────────────────────────────────
+async function uploadAudio(role, chunks) {
+  const blob = new Blob(chunks, { type: 'audio/webm' });
+  const form = new FormData();
+  form.append('audio', blob, 'recording.webm');
+
+  // ── Triage: SSE streaming path ────────────────────────────────────────────
+  if (role === 'triage') {
+    const triageLang = document.getElementById('triage-lang').value;
+    if (triageLang && triageLang !== 'auto') {
+      form.append('language', triageLang);
+    }
+
+    const card    = document.getElementById('triage-result-card');
+    const alertEl = document.getElementById('triage-alert');
+    const grid    = document.getElementById('triage-grid');
+    card.style.display = 'block';
+    alertEl.innerHTML  = '<em style="color:#94a3b8">Transcribing speech…</em>';
+    grid.innerHTML     = '';
+    setStatus('Transcribing…', '');
+
+    try {
+      const res = await fetch('/api/triage', { method: 'POST', body: form });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: res.statusText }));
+        alertEl.innerHTML = `<span style="color:#f87171">Error: ${esc(err.error || res.statusText)}</span>`;
+        setStatus('Triage failed.', 'err');
+        return;
+      }
+
+      const reader  = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const parts = buffer.split('\n\n');
+        buffer = parts.pop();
+
+        for (const part of parts) {
+          for (const line of part.split('\n')) {
+            if (!line.startsWith('data: ')) continue;
+            let event;
+            try { event = JSON.parse(line.slice(6)); } catch { continue; }
+
+            if (event.status === 'transcribed') {
+              // Show transcript immediately while Gemma 4 thinks
+              const langName = LANG_NAMES[event.language] || event.language;
+              alertEl.innerHTML = `<em style="color:#94a3b8">Gemma 4 analysing… &nbsp;|&nbsp; Detected: <strong style="color:#e2e8f0">${langName}</strong></em>`;
+              grid.innerHTML =
+                `<div class="triage-key">Transcript (${langName})</div>` +
+                `<div class="triage-val">${esc(event.transcript)}</div>`;
+              setStatus('Transcribed — Gemma 4 extracting triage…', '');
+
+            } else if (event.status === 'complete') {
+              renderTriage(event);
+              setStatus('Triage complete.', 'ok');
+
+            } else if (event.status === 'error') {
+              alertEl.innerHTML = `<span style="color:#f87171">Error: ${esc(event.error || 'Triage failed')}</span>`;
+              setStatus('Triage error.', 'err');
+            }
+          }
+        }
+      }
+    } catch (err) {
+      alertEl.innerHTML = `<span style="color:#f87171">Network error: ${esc(err.message)}</span>`;
+      setStatus('Network error.', 'err');
+    }
+    return;
+  }
+
+  // ── Patient / Doctor: standard JSON path ─────────────────────────────────
+  const lang = role === 'patient'
+    ? document.getElementById('bridge-lang').value
+    : document.getElementById('doctor-lang').value;
+  form.append('language', lang);
+
+  const endpoint = role === 'patient' ? '/api/bridge/patient' : '/api/bridge/doctor';
+  setStatus(role === 'patient' ? 'Transcribing patient…' : 'Transcribing doctor…', '');
+
+  try {
+    const res  = await fetch(endpoint, { method: 'POST', body: form });
+    const data = await res.json();
+
+    if (data.error) { setStatus('Error: ' + data.error, 'err'); return; }
+
+    if (role === 'patient') {
+      const langName = LANG_NAMES[data.detected_language] || data.detected_language;
+      document.getElementById('patient-transcript-label').textContent =
+        `Transcript (${langName})`;
+      document.getElementById('patient-transcript').textContent  = data.transcript;
+      document.getElementById('patient-translation').textContent = data.translation;
+      // Sync doctor-lang dropdown so the reply goes back in the right language
+      currentPatientLang = data.detected_language;
+      const dl = document.getElementById('doctor-lang');
+      if (dl && data.detected_language) dl.value = data.detected_language;
+      setStatus('Patient transcribed and translated.', 'ok');
+    } else {
+      document.getElementById('doctor-transcript').textContent  = data.transcript;
+      document.getElementById('doctor-translation').textContent = data.translation;
+      setStatus('Doctor transcribed and translated.', 'ok');
+    }
+  } catch (err) {
+    setStatus('Network error: ' + err.message, 'err');
+  }
+}
+
+// ── Triage render ─────────────────────────────────────────────────────────────
+function renderTriage(data) {
+  const card    = document.getElementById('triage-result-card');
+  const alertEl = document.getElementById('triage-alert');
+  const grid    = document.getElementById('triage-grid');
+  const t       = data.triage || {};
+  const langName = LANG_NAMES[data.language] || data.language || '—';
+
+  // Severity banner
+  const sev = (t.severity || 'UNKNOWN').toUpperCase();
+  const sevStyle = {
+    RED:     'background:#fee2e2;color:#991b1b;border:1px solid #fca5a5;',
+    YELLOW:  'background:#fef9c3;color:#854d0e;border:1px solid #fde047;',
+    GREEN:   'background:#dcfce7;color:#166534;border:1px solid #86efac;',
+  }[sev] || 'background:#f1f5f9;color:#334155;border:1px solid #cbd5e1;';
+
+  alertEl.innerHTML = `<div style="${sevStyle}padding:10px 16px;border-radius:8px;
+      font-weight:600;font-size:1rem;margin-bottom:12px;">
+    Severity: ${sev}
+  </div>`;
+
+  // Grid — alternating key / val pairs as direct children of triage-grid
+  const rows = [];
+  if (data.transcript)
+    rows.push([`Transcript (${langName})`, esc(data.transcript)]);
+  if (t.chief_complaint)
+    rows.push([`Chief Complaint (${langName})`, esc(t.chief_complaint)]);
+  if (t.symptoms?.length)
+    rows.push([`Symptoms (${langName})`,
+      t.symptoms.map(s => '• ' + esc(s)).join('<br>')]);
+  if (t.duration)
+    rows.push(['Duration', esc(t.duration)]);
+  if (t.vitals_mentioned?.length)
+    rows.push(['Vitals mentioned',
+      t.vitals_mentioned.map(v => '• ' + esc(v)).join('<br>')]);
+
+  grid.innerHTML = rows.map(([k, v]) =>
+    `<div class="triage-key">${k}</div><div class="triage-val">${v}</div>`
+  ).join('');
+
+  card.style.display = 'block';
+}
+
+// ── TTS helpers ───────────────────────────────────────────────────────────────
+async function speakEl(elId, lang) {
+  const el = document.getElementById(elId);
+  if (!el) return;
+  const text = el.textContent.trim();
+  if (!text) return;
+  await speakText(text, lang);
+}
+
+async function speakText(text, lang) {
+  if (!text) return;
+  try {
+    const res = await fetch('/api/tts', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ text, language: lang }),
+    });
+    if (!res.ok) { console.error('TTS error:', res.statusText); return; }
+    const blob = await res.blob();
+    const url  = URL.createObjectURL(blob);
+    const audio = new Audio(url);
+    audio.onended = () => URL.revokeObjectURL(url);
+    audio.play();
+  } catch (err) {
+    console.error('TTS failed:', err);
+  }
+}
 </script>
 </body>
 </html>

@@ -218,3 +218,13 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# PatientDoctorBridge — temporary audio files (privacy contract)
+# These are deleted by AudioHandler.transcribe() immediately after use.
+# Any that survive a crash are safe to delete and must not be committed.
+audio/temp_rec_*.wav
+audio/temp_rec_*.webm
+audio/temp_rec_*.ogg
+*.wav
+benchmark_results.json
+ngrok.log

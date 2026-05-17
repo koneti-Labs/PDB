@@ -1,10 +1,11 @@
 """
 translation/prescription.py
 
-PrescriptionService -- extracts structured medicine data from a prescription image.
+PrescriptionService -- extracts structured medicine data from a prescription image
+and (Phase 4b) translates the result into the patient's native language.
 
-Phase 4: uses GemmaEngine.transcribe_prescription() which routes to gemma4:e4b
-(REASONING_EXTRACTION mode, multimodal vision).
+Phase 4:  uses GemmaEngine.transcribe_prescription() -> gemma4:e4b (vision)
+Phase 4b: uses GemmaEngine.translate_prescription_summary() -> gemma4:e2b (translation)
 """
 from __future__ import annotations
 
@@ -34,7 +35,7 @@ class PrescriptionResult(TypedDict):
 
 class PrescriptionService:
     """
-    Wraps GemmaEngine.transcribe_prescription() with JSON parsing.
+    Wraps GemmaEngine with prescription OCR (Phase 4) and translation (Phase 4b).
 
     Parameters
     ----------
@@ -44,6 +45,32 @@ class PrescriptionService:
 
     def __init__(self, engine: GemmaEngine) -> None:
         self._engine = engine
+
+    def translate_summary(self, result: PrescriptionResult, target_lang: str) -> str:
+        """
+        Produce a patient-friendly prescription explanation in the target language.
+
+        Builds a plain-English summary from *result*, then calls
+        GemmaEngine.translate_prescription_summary() (gemma4:e2b, FAST_TRANSLATION)
+        to translate it into the patient's native language.
+
+        Parameters
+        ----------
+        result : PrescriptionResult
+            Structured data returned by extract().
+        target_lang : str
+            ISO 639-1 code (hi/te/kn/ta).  Returns the English summary unchanged
+            when target_lang is "en".
+
+        Returns
+        -------
+        str
+            Translated, patient-friendly explanation.
+        """
+        english_summary = _build_english_summary(result)
+        if target_lang == "en":
+            return english_summary
+        return self._engine.translate_prescription_summary(english_summary, target_lang)
 
     def extract(self, image_path: str) -> PrescriptionResult:
         """
@@ -76,15 +103,81 @@ class PrescriptionService:
         )
 
 
+# ---------------------------------------------------------------------------
+# Module-level helpers
+# ---------------------------------------------------------------------------
+
+def _build_english_summary(result: PrescriptionResult) -> str:
+    """
+    Build a plain-English, patient-readable summary from a PrescriptionResult.
+
+    Used by PrescriptionService.translate_summary() as input to the translation
+    prompt.  Keeps formatting minimal so the Gemma translation prompt is not
+    cluttered with markdown or table syntax.
+    """
+    lines: list[str] = []
+
+    if result["doctor_name"] not in ("not visible", ""):
+        lines.append("Doctor: " + result["doctor_name"])
+    if result["patient_name"] not in ("not visible", ""):
+        lines.append("Patient: " + result["patient_name"])
+    if result["date"] not in ("not visible", ""):
+        lines.append("Date: " + result["date"])
+
+    if lines:
+        lines.append("")  # blank separator before medicines
+
+    if result["medicines"]:
+        lines.append("Medicines prescribed:")
+        for i, med in enumerate(result["medicines"], 1):
+            parts = [str(i) + ". " + med["name"]]
+            if med["dosage"] not in ("not specified", ""):
+                parts.append(med["dosage"])
+            if med["form"] not in ("other", ""):
+                parts.append("(" + med["form"] + ")")
+            lines.append(" ".join(parts))
+
+            if med["frequency"] not in ("not specified", ""):
+                lines.append("   Take: " + med["frequency"])
+            if med["duration"] not in ("not specified", ""):
+                lines.append("   For: " + med["duration"])
+            if med["instructions"] not in ("none", ""):
+                lines.append("   Note: " + med["instructions"])
+    else:
+        lines.append("No medicines could be read from the prescription.")
+
+    if result["notes"] not in ("", "none"):
+        lines.append("\nAdditional instructions: " + result["notes"])
+
+    return "\n".join(lines)
+
+
+def _strip_think_tags(text: str) -> str:
+    """
+    Remove Gemma 4 extended-thinking blocks from raw model output.
+
+    gemma4:e4b (REASONING_EXTRACTION) may emit <think>...</think> blocks even
+    for vision/OCR tasks.  These must be stripped before JSON parsing because
+    the think block can contain JSON-like { } syntax that breaks the greedy
+    regex strategy.  Also handles truncated blocks (no closing tag).
+    """
+    cleaned = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL | re.IGNORECASE)
+    cleaned = re.sub(r"<think>.*$", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
+    return cleaned.strip()
+
+
 def _parse_json(raw: str) -> dict:
     """
-    Parse JSON from Gemma 4 output using four strategies:
+    Parse JSON from Gemma 4 output using five strategies:
+    0. Strip <think>...</think> reasoning blocks (gemma4:e4b think mode).
     1. Direct parse.
     2. Strip markdown fences then parse.
-    3. Regex-extract first { ... } block.
+    3. Find the LAST balanced { ... } block (avoids think-block JSON-like noise).
     4. Attempt structural repair of truncated JSON (num_predict cut-off).
     """
-    text = raw.strip()
+    # Strategy 0: strip think-mode reasoning traces so they don't pollute
+    # downstream strategies with JSON-like content from the reasoning section.
+    text = _strip_think_tags(raw.strip())
 
     # Strategy 1: direct parse
     try:
@@ -100,13 +193,49 @@ def _parse_json(raw: str) -> dict:
     except json.JSONDecodeError:
         pass
 
-    # Strategy 3: find first { ... } block (greedy)
-    match = re.search(r"\{.*\}", text, re.DOTALL)
-    if match:
-        try:
-            return json.loads(match.group())
-        except json.JSONDecodeError:
-            pass
+    # Strategy 3: find the LARGEST balanced { ... } block.
+    # Collect every valid JSON candidate and pick the one with the most
+    # characters.  The outermost wrapper object is always larger than any
+    # nested object inside it, so this correctly extracts the root JSON even
+    # when the model wraps it in preamble text.
+    matches = list(re.finditer(r"\{", text))
+    best: dict | None = None
+    best_len = 0
+    for m in matches:
+        candidate = text[m.start():]
+        depth = 0
+        end = -1
+        in_str = False
+        esc = False
+        for i, ch in enumerate(candidate):
+            if esc:
+                esc = False
+                continue
+            if ch == "\\" and in_str:
+                esc = True
+                continue
+            if ch == '"':
+                in_str = not in_str
+                continue
+            if in_str:
+                continue
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    end = i
+                    break
+        if end != -1:
+            try:
+                parsed = json.loads(candidate[:end + 1])
+                if isinstance(parsed, dict) and len(candidate) > best_len:
+                    best = parsed
+                    best_len = len(candidate)
+            except json.JSONDecodeError:
+                continue
+    if best is not None:
+        return best
 
     # Strategy 4: structural repair of truncated JSON
     # (happens when GEMMA_NUM_PREDICT cap cuts off the model mid-output)
@@ -116,87 +245,77 @@ def _parse_json(raw: str) -> dict:
     except ValueError:
         pass
 
-    raise ValueError(f"Gemma 4 returned non-JSON prescription output: {text[:200]!r}")
+    raise ValueError(
+        "Gemma 4 returned non-JSON prescription output: " + repr(text[:300])
+    )
 
 
 def _repair_truncated_json(text: str) -> dict:
     """
-    Attempt to close an incomplete JSON object that was truncated mid-stream.
+    Close an incomplete JSON object that was cut off mid-stream.
 
-    Walks the string character-by-character tracking open braces/brackets,
-    then appends the necessary closing characters and retries json.loads().
-    Strips any trailing incomplete value (partial string, partial key, dangling
-    comma) before closing.
+    Walks the string tracking open brace/bracket depth (ignoring content
+    inside strings), then appends the necessary closing characters.
+
+    Raises ValueError if the result still cannot be parsed.
     """
-    s = text.strip()
-    if not s.startswith("{"):
-        raise ValueError("Not a JSON object")
-
-    # Walk string tracking open structure depth (ignoring content inside strings)
     stack: list[str] = []
-    in_str = False
-    esc = False
+    in_string = False
+    escape_next = False
 
-    for ch in s:
-        if esc:
-            esc = False
+    for ch in text:
+        if escape_next:
+            escape_next = False
             continue
-        if ch == "\\" and in_str:
-            esc = True
+        if ch == "\\":
+            if in_string:
+                escape_next = True
             continue
         if ch == '"':
-            in_str = not in_str
+            in_string = not in_string
             continue
-        if in_str:
+        if in_string:
             continue
         if ch in ("{", "["):
             stack.append(ch)
-        elif ch == "}" and stack and stack[-1] == "{":
-            stack.pop()
-        elif ch == "]" and stack and stack[-1] == "[":
-            stack.pop()
+        elif ch in ("}", "]"):
+            if stack:
+                stack.pop()
 
-    # If stack is empty the JSON was valid (parse error is semantic, not structural)
-    if not stack:
-        raise ValueError("Stack balanced — JSON is structurally complete but still invalid")
+    if not stack and not in_string:
+        raise ValueError("JSON is not truncated or cannot be repaired")
 
-    # Trim trailing garbage: remove anything after the last complete value
-    # (trailing comma, partial key/value, unclosed string)
-    trimmed = s.rstrip()
-    # Remove trailing open-string fragment (odd number of unescaped quotes at end)
-    # and partial comma-separated entry
-    for bad_suffix in ('",', '",\n', ",", "{\n", "{"):
-        if trimmed.endswith(bad_suffix):
-            trimmed = trimmed[: -len(bad_suffix)]
-            break
-    # Also strip a dangling un-closed string value at the very end
-    if trimmed.count('"') % 2 != 0:
-        last_quote = trimmed.rfind('"')
-        trimmed = trimmed[:last_quote].rstrip().rstrip(",")
+    # Trim trailing garbage (dangling commas, unclosed strings)
+    trimmed = text.rstrip()
+    if in_string:
+        trimmed += '"'  # close the open string
+    trimmed = trimmed.rstrip(",").rstrip()
 
-    # Close all open structures
+    # Append closers in reverse stack order
     closers = "".join("}" if ch == "{" else "]" for ch in reversed(stack))
-    repaired = trimmed.rstrip(",").rstrip() + closers
+    repaired = trimmed + closers
 
     try:
         return json.loads(repaired)
     except json.JSONDecodeError as exc:
-        raise ValueError(f"Repair failed: {exc} — snippet: {repaired[-80:]!r}") from exc
+        raise ValueError("Structural repair failed: " + str(exc)) from exc
 
 
-def _normalise_medicines(raw: object) -> list[MedicineItem]:
+def _normalise_medicines(raw: object) -> list[dict[str, str]]:
     if not isinstance(raw, list):
         return []
-    result = []
+    out: list[dict[str, str]] = []
     for item in raw:
         if not isinstance(item, dict):
             continue
-        result.append(MedicineItem(
-            name=str(item.get("name", "unknown")),
-            dosage=str(item.get("dosage", "not specified")),
-            form=str(item.get("form", "other")),
-            frequency=str(item.get("frequency", "not specified")),
-            duration=str(item.get("duration", "not specified")),
-            instructions=str(item.get("instructions", "none")),
-        ))
-    return result
+        out.append(
+            {
+                "name": str(item.get("name", "unknown")),
+                "dosage": str(item.get("dosage", "not specified")),
+                "form": str(item.get("form", "other")),
+                "frequency": str(item.get("frequency", "not specified")),
+                "duration": str(item.get("duration", "not specified")),
+                "instructions": str(item.get("instructions", "none")),
+            }
+        )
+    return out

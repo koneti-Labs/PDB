@@ -211,23 +211,37 @@ class AudioHandler:
 
     @classmethod
     def _ensure_model(cls) -> None:
-        """Lazy-load Whisper once per process.  Downloads to MODEL_CACHE_DIR on first call."""
+        """
+        Lazy-load Whisper once per process.  Downloads to MODEL_CACHE_DIR on
+        first call and caches to disk for subsequent runs.
+
+        Device selection is automatic:
+          • CUDA GPU present → float16 on GPU (fastest, Kaggle T4/P100/A100)
+          • CPU only         → int8 quantized (universal fallback, Pi 5)
+        """
         if cls._model is not None:
             return
 
         from faster_whisper import WhisperModel
 
+        from config.hardware import HARDWARE  # import here to avoid circular deps
+
         console.print(
-            f"[yellow]Loading Whisper '{WHISPER_MODEL_SIZE}' model..."
+            f"[yellow]Loading Whisper '{WHISPER_MODEL_SIZE}' model "
+            f"on {HARDWARE.device.upper()} ({HARDWARE.compute_type})…"
             "  (first run downloads model, cached afterwards)[/yellow]"
         )
         cls._model = WhisperModel(
             WHISPER_MODEL_SIZE,
-            device="cpu",
-            compute_type="int8",
+            device=HARDWARE.device,
+            compute_type=HARDWARE.compute_type,
+            cpu_threads=HARDWARE.num_cpu_threads,
             download_root=str(MODEL_CACHE_DIR),
         )
-        console.print("[green]Whisper model ready.[/green]")
+        console.print(
+            f"[green]Whisper model ready "
+            f"({'GPU ⚡' if HARDWARE.has_gpu else 'CPU'}).[/green]"
+        )
 
     def _detect_language_probs(self, audio_path: Path) -> dict[str, float]:
         """

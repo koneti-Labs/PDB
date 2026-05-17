@@ -26,19 +26,20 @@ from typing import Any
 import ollama
 from rich.console import Console
 
+# Static imports — Ollama connection params used once at construction time;
+# safe to capture at import since they never change at runtime.
 from config.settings import (
-    GEMMA_KEEP_ALIVE,
-    GEMMA_NUM_CTX,
-    GEMMA_NUM_CTX_FAST,
-    GEMMA_NUM_PREDICT_FAST,
-    GEMMA_NUM_PREDICT_REASONING,
-    GEMMA_TEMPERATURE,
-    GEMMA_TOP_P,
     OLLAMA_HOST,
     OLLAMA_TIMEOUT,
     OLLAMA_TIMEOUT_REASONING,
-    TRIAGE_THINK_MODE,
 )
+
+# Dynamic import — generation knobs are read from this module at CALL TIME
+# (not captured at import time) so that runtime patches applied by the
+# notebook patch cell or by server.py self-healing take immediate effect.
+# Previously the "from … import" approach captured GEMMA_NUM_CTX_FAST=512
+# at import time, making runtime patches invisible to generate().
+import config.settings as _cfg
 
 console = Console()
 
@@ -65,22 +66,54 @@ _PROMPT_LABELS: tuple[str, ...] = (
     "Telugu for patient:",
     "Kannada for patient:",
     "Tamil for patient:",
+    # Prescription summary prompts end with "{language} explanation for patient:"
+    "explanation for patient:",
     "for patient:",
     "Translation:",
     "Answer:",
 )
 
+import re as _re  # noqa: E402  (module-level, used by _clean_response only)
+
+
+def _strip_think_tags(text: str) -> str:
+    """
+    Remove Gemma 4 extended-thinking blocks from raw model output.
+
+    When think=True is active (triage mode) or when gemma4:e4b spontaneously
+    emits reasoning traces, the output contains <think>...</think> blocks.
+    These must be stripped before any downstream processing:
+      - Translation callers would expose raw XML-like reasoning to patients.
+      - JSON parsers in triage/prescription would match { } inside the block.
+
+    Handles both complete blocks and truncated blocks (no closing tag due to
+    num_predict cap).
+    """
+    # Remove complete blocks (non-greedy so multiple blocks are all removed)
+    cleaned = _re.sub(r"<think>.*?</think>", "", text, flags=_re.DOTALL | _re.IGNORECASE)
+    # Remove unclosed block (truncated at token limit)
+    cleaned = _re.sub(r"<think>.*$", "", cleaned, flags=_re.DOTALL | _re.IGNORECASE)
+    return cleaned.strip()
+
 
 def _clean_response(text: str) -> str:
     """
-    Strip echoed prompt labels that Gemma 4 occasionally repeats at the
-    very start of its output.
+    Clean the raw Gemma 4 response before returning to callers.
 
-    For example, if the prompt ends with "English for doctor:" and the model
-    echos that label before producing the actual translation, this function
-    removes the label so the caller only sees the translation.
+    Steps (in order):
+    1. Strip <think>...</think> extended-reasoning blocks — these must never
+       be shown to patients or passed to JSON parsers.
+    2. Strip echoed prompt labels from the very start of the output.
+       Gemma 4 sometimes repeats the label that ends the prompt (e.g.
+       "Hindi for patient:") before producing the actual translation.
+
+    Both steps are applied unconditionally so callers never see internal
+    model artefacts.
     """
-    stripped = text.strip()
+    # Step 1: strip think-mode reasoning traces
+    stripped = _strip_think_tags(text)
+
+    # Step 2: strip echoed prompt labels (case-insensitive, prefix match only)
     for label in _PROMPT_LABELS:
         if stripped.lower().startswith(label.lower()):
             stripped = stripped[len(label):].strip()
@@ -118,7 +151,9 @@ class GemmaEngine:
         mode: InferenceMode = InferenceMode.FAST_TRANSLATION,
         temperature: float | None = None,
         num_ctx: int | None = None,
+        num_predict: int | None = None,
         think: bool = False,
+        use_reasoning_client: bool = False,
     ) -> str:
         """
         Generate text using the Gemma 4 model mapped to *mode*.
@@ -132,7 +167,12 @@ class GemmaEngine:
         temperature : float or None
             Override GEMMA_TEMPERATURE.
         num_ctx : int or None
-            Override GEMMA_NUM_CTX.
+            Override GEMMA_NUM_CTX / GEMMA_NUM_CTX_FAST (mode-dependent default).
+        num_predict : int or None
+            Override the output token cap (GEMMA_NUM_PREDICT_FAST or
+            GEMMA_NUM_PREDICT_REASONING).  Use this when the default cap is
+            too small for a particular task (e.g. prescription summary
+            translation with many medicines needs more than 512 tokens).
         think : bool
             Enable extended reasoning (gemma4:e4b thinking mode).
 
@@ -151,19 +191,22 @@ class GemmaEngine:
 
         # Mode-specific defaults: fast translation uses a smaller context
         # window and tighter output cap; reasoning gets the full window.
+        # Read from _cfg at call time so runtime patches are immediately effective.
         is_fast = mode == InferenceMode.FAST_TRANSLATION
-        default_ctx = GEMMA_NUM_CTX_FAST if is_fast else GEMMA_NUM_CTX
+        default_ctx = _cfg.GEMMA_NUM_CTX_FAST if is_fast else _cfg.GEMMA_NUM_CTX
         default_predict = (
-            GEMMA_NUM_PREDICT_FAST if is_fast else GEMMA_NUM_PREDICT_REASONING
+            _cfg.GEMMA_NUM_PREDICT_FAST if is_fast else _cfg.GEMMA_NUM_PREDICT_REASONING
         )
 
         options: dict[str, Any] = {
-            "temperature": temperature if temperature is not None else GEMMA_TEMPERATURE,
-            "top_p": GEMMA_TOP_P,
+            "temperature": temperature if temperature is not None else _cfg.GEMMA_TEMPERATURE,
+            "top_p": _cfg.GEMMA_TOP_P,
             "num_ctx": num_ctx if num_ctx is not None else default_ctx,
             # Cap output length so the model cannot run off generating
             # paragraphs of trailing text.  Tuned for short clinical replies.
-            "num_predict": default_predict,
+            # Callers may override via num_predict (e.g. prescription summary
+            # translation needs more tokens than the fast-mode default of 512).
+            "num_predict": num_predict if num_predict is not None else default_predict,
         }
         generate_kwargs: dict[str, Any] = {
             "model": model,
@@ -172,7 +215,7 @@ class GemmaEngine:
             # Hold the model in (V)RAM between calls so we do not pay the
             # cold-load tax on every request.  This is the single biggest
             # win for end-to-end latency.
-            "keep_alive": GEMMA_KEEP_ALIVE,
+            "keep_alive": _cfg.GEMMA_KEEP_ALIVE,
         }
         if think:
             generate_kwargs["think"] = True
@@ -187,11 +230,20 @@ class GemmaEngine:
                 try:
                     response = client.generate(**generate_kwargs)
                 except Exception as exc2:
-                    raise RuntimeError(
-                        f"Ollama inference failed (model={model}): {exc2}\n"
-                        "Make sure Ollama is running and the model is pulled:\n"
-                        f"  ollama pull {model}"
-                    ) from exc2
+                    error_msg = str(exc2)
+                    if "not found" in error_msg.lower() or "no such file" in error_msg.lower():
+                        raise RuntimeError(
+                            f"Model not found: {model}\n"
+                            f"Available models can be checked with: ollama list\n"
+                            f"Pull the model with: ollama pull {model}\n"
+                            f"Original error: {exc2}"
+                        ) from exc2
+                    else:
+                        raise RuntimeError(
+                            f"Ollama inference failed (model={model}): {exc2}\n"
+                            "Make sure Ollama is running and the model is pulled:\n"
+                            f"  ollama pull {model}"
+                        ) from exc2
             else:
                 raise RuntimeError(
                     f"Ollama inference failed (model={model}): {exc}\n"
@@ -199,11 +251,25 @@ class GemmaEngine:
                     f"  ollama pull {model}"
                 ) from exc
         except Exception as exc:
-            raise RuntimeError(
-                f"Ollama inference failed (model={model}): {exc}\n"
-                "Make sure Ollama is running and the model is pulled:\n"
-                f"  ollama pull {model}"
-            ) from exc
+            error_msg = str(exc)
+            if "connection" in error_msg.lower() or "refused" in error_msg.lower():
+                raise RuntimeError(
+                    f"Cannot connect to Ollama at {OLLAMA_HOST}\n"
+                    "Make sure Ollama is running:\n"
+                    f"  ollama serve"
+                ) from exc
+            elif "not found" in error_msg.lower() or "no such file" in error_msg.lower():
+                raise RuntimeError(
+                    f"Model not found: {model}\n"
+                    f"Available models can be checked with: ollama list\n"
+                    f"Pull the model with: ollama pull {model}"
+                ) from exc
+            else:
+                raise RuntimeError(
+                    f"Ollama inference failed (model={model}): {exc}\n"
+                    "Make sure Ollama is running and the model is pulled:\n"
+                    f"  ollama pull {model}"
+                ) from exc
 
         # response.response is a str (Ollama SDK >= 0.2 returns a Pydantic
         # SubscriptableBaseModel, so both response["response"] and
@@ -282,7 +348,7 @@ class GemmaEngine:
         return self.generate(
             prompt,
             mode=InferenceMode.REASONING_EXTRACTION,
-            think=TRIAGE_THINK_MODE,
+            think=_cfg.TRIAGE_THINK_MODE,
         )
 
     # ------------------------------------------------------------------
@@ -315,9 +381,9 @@ class GemmaEngine:
         model = MODELS[InferenceMode.REASONING_EXTRACTION]
         options: dict[str, Any] = {
             "temperature": 0.1,
-            "top_p": GEMMA_TOP_P,
-            "num_ctx": GEMMA_NUM_CTX,
-            "num_predict": GEMMA_NUM_PREDICT_REASONING,
+            "top_p": _cfg.GEMMA_TOP_P,
+            "num_ctx": _cfg.GEMMA_NUM_CTX,
+            "num_predict": _cfg.GEMMA_NUM_PREDICT_REASONING,
         }
         try:
             response = self._reasoning_client.generate(
@@ -325,15 +391,61 @@ class GemmaEngine:
                 prompt=PRESCRIPTION_OCR_PROMPT,
                 images=[image_b64],
                 options=options,
-                keep_alive=GEMMA_KEEP_ALIVE,
+                keep_alive=_cfg.GEMMA_KEEP_ALIVE,
             )
             raw_text = response.response if hasattr(response, "response") else response["response"]
-            return raw_text.strip()
+            # Strip any <think>...</think> blocks the vision model may emit
+            # before the JSON output — these break downstream JSON parsing.
+            return _strip_think_tags(raw_text.strip())
         except Exception as exc:
             raise RuntimeError(
                 f"Prescription OCR failed (model={model}): {exc}\n"
                 f"Make sure Ollama is running and {model} is pulled."
             ) from exc
+
+    # ------------------------------------------------------------------
+    # Phase 4b: Prescription summary translation
+    # ------------------------------------------------------------------
+
+    def translate_prescription_summary(
+        self, prescription_text: str, target_lang: str
+    ) -> str:
+        """
+        Translate a plain-English prescription summary into the patient's language.
+
+        Uses FAST_TRANSLATION (gemma4:e2b).  Called by
+        PrescriptionService.translate_summary() after OCR extraction.
+
+        Parameters
+        ----------
+        prescription_text : str
+            Human-readable English summary of extracted medicines + metadata.
+        target_lang : str
+            ISO 639-1 code (hi/te/kn/ta).  "en" is a no-op (caller checks first).
+
+        Returns
+        -------
+        str
+            Patient-friendly explanation in the target language.
+        """
+        from config.languages import LANGUAGE_DISPLAY
+        from translation.prompts import PRESCRIPTION_SUMMARY_PROMPT
+
+        lang_name = LANGUAGE_DISPLAY.get(target_lang, target_lang)
+        prompt = PRESCRIPTION_SUMMARY_PROMPT.format(
+            language=lang_name,
+            prescription_text=prescription_text,
+        )
+        # Use a higher token budget than the fast-translation default (512).
+        # A prescription with 3-5 medicines described in an Indic language
+        # (which is naturally wordier than English) can easily exceed 512
+        # tokens.  1024 gives comfortable headroom while keeping latency low.
+        return self.generate(
+            prompt,
+            mode=InferenceMode.FAST_TRANSLATION,
+            num_predict=1024,
+            use_reasoning_client=True,
+        )
 
     # ------------------------------------------------------------------
     # Phase 5: Emergency reassurance
@@ -408,7 +520,7 @@ class GemmaEngine:
                     model=model,
                     prompt="ok",
                     options={"num_predict": 1, "temperature": 0.0},
-                    keep_alive=GEMMA_KEEP_ALIVE,
+                    keep_alive=_cfg.GEMMA_KEEP_ALIVE,
                 )
                 console.print(f"[green]  ✓ Warmed up {model}[/green]")
                 GemmaEngine._warmed_up[model] = True
@@ -450,7 +562,7 @@ class GemmaEngine:
                 tag = m.model if hasattr(m, "model") else m.get("model")
                 if tag:
                     available.add(tag)
-        except Exception as exc:
-            raise RuntimeError(f"Cannot reach Ollama at {OLLAMA_HOST}: {exc}") from exc
+        except Exception:
+            return {model: False for model in MODELS.values()}
 
         return {model: model in available for model in MODELS.values()}

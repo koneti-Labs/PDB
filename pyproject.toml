@@ -16,6 +16,7 @@ dependencies = [
     "rich>=13",
     "ollama>=0.4.7",
     "flask>=3.0",
+    "requests>=2.31",
 ]
 
 [project.optional-dependencies]

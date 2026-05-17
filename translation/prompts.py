@@ -122,6 +122,31 @@ Rules:
 JSON:"""
 
 # ---------------------------------------------------------------------------
+# Prescription Summary Translation  (Phase 4b)
+# ---------------------------------------------------------------------------
+# Model: gemma4:e2b  (InferenceMode.FAST_TRANSLATION)
+# Takes the English medicine list extracted by OCR and produces a
+# patient-friendly explanation in the patient's native language.
+# {language}          = patient display name (e.g. "Hindi")
+# {prescription_text} = plain-English summary built from PrescriptionResult
+PRESCRIPTION_SUMMARY_PROMPT: str = """\
+You are a medical interpreter in an Indian clinic. \
+A patient cannot read their prescription. \
+Translate and explain the following prescription clearly in {language}.
+
+Rules:
+- Use simple, everyday {language} that a non-medical person can understand.
+- For each medicine: say the name, dose, when to take it, and for how long.
+- Convert any medical jargon into plain language.
+- Warm, reassuring tone.
+- Output ONLY the {language} explanation — no preamble, no labels, no English.
+
+Prescription (English):
+{prescription_text}
+
+{language} explanation for patient:"""
+
+# ---------------------------------------------------------------------------
 # Emergency Reassurance  (Phase 5)
 # ---------------------------------------------------------------------------
 # Model: gemma4:e2b  (InferenceMode.FAST_TRANSLATION) for speed.

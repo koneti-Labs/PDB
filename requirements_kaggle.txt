@@ -1,0 +1,41 @@
+# requirements_kaggle.txt
+# Clean UTF-8 requirements for Kaggle Linux (Python 3.11)
+# Install with: pip install -r requirements_kaggle.txt
+#
+# NOTE: torch/torchaudio are pre-installed on Kaggle GPU kernels.
+# Uncomment the torch lines only if running outside Kaggle.
+# ------------------------------------------------------------------
+
+# Core ASR
+faster-whisper==1.1.1
+
+# Web server
+Flask==3.1.1
+Werkzeug==3.1.3
+
+# Ollama client (Gemma 4 local inference)
+ollama==0.4.7
+
+# CLI + display
+rich==14.0.0
+typer==0.15.1
+click==8.1.8
+
+# Audio I/O
+soundfile==0.13.1
+numpy==1.26.4
+
+# HTTP
+requests==2.32.3
+httpx==0.28.1
+
+# Utilities
+pydantic==2.11.4
+
+# Kaggle tunnel (for browser-based judge testing)
+pyngrok==7.2.2
+
+# ------------------------------------------------------------------
+# Pre-installed on Kaggle GPU kernels — do NOT reinstall to save time:
+# torch, torchaudio, scipy
+# ------------------------------------------------------------------

@@ -53,7 +53,7 @@ class TestResponseHandling:
 
     def test_ollama_exception_raises_runtime_error(self) -> None:
         engine, mock_client = _engine_with_mock()
-        mock_client.generate.side_effect = Exception("connection refused")
+        mock_client.generate.side_effect = Exception("model failed")
         with pytest.raises(RuntimeError, match="Ollama inference failed"):
             engine.generate("prompt")
 
@@ -146,4 +146,5 @@ class TestConnectivityCheck:
         engine, _ = _engine_with_mock()
         engine._client.list.side_effect = Exception("refused")
         result = engine.check_connectivity()
+        assert isinstance(result, dict)
         assert all(v is False for v in result.values())

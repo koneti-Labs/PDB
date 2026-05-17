@@ -108,19 +108,49 @@ class TriageService:
 # Internal helpers
 # ---------------------------------------------------------------------------
 
+def _strip_think_tags(text: str) -> str:
+    """
+    Remove Gemma 4 extended-thinking blocks from raw model output.
+
+    When think=True is used (TRIAGE_THINK_MODE), Gemma 4 prefixes its answer
+    with a <think>...</think> reasoning trace.  These blocks must be stripped
+    BEFORE any JSON parsing attempt because:
+      - The think block may itself contain JSON-like { } syntax (examples,
+        partial reasoning) that fools the greedy regex in Strategy 3.
+      - Direct json.loads() fails on a string that starts with <think>.
+
+    Also handles the common variant where the closing tag is missing
+    (truncated by num_predict cap) — in that case everything from <think>
+    to end-of-string is removed.
+    """
+    # Remove complete <think>...</think> blocks (non-greedy, case-insensitive)
+    cleaned = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL | re.IGNORECASE)
+    # Remove unclosed <think> blocks (truncated by token limit)
+    cleaned = re.sub(r"<think>.*$", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
+    return cleaned.strip()
+
+
 def _parse_json(raw: str) -> dict:
     """
     Parse the JSON string returned by Gemma 4.
 
-    Attempts four strategies in order:
+    Attempts five strategies in order:
+    0. Strip Gemma 4 <think>...</think> reasoning blocks first.
     1. Direct json.loads() on the full (stripped) string.
     2. Strip markdown fences (```json ... ```) then json.loads().
-    3. Regex extraction of the first ``{...}`` block.
+    3. Balanced-brace extraction of the LAST ``{...}`` block — iterates
+       all opening braces from right to left and picks the first one that
+       forms a valid, balanced JSON object.  This avoids the greedy regex
+       bug where content inside think blocks (which may contain JSON-like
+       snippets) would be matched instead of the real output JSON.
     4. Structural repair for truncated JSON (num_predict cut-off).
 
-    Raises ValueError if all four fail.
+    Raises ValueError if all strategies fail.
     """
-    text = raw.strip()
+    # Strategy 0: strip think-mode reasoning traces before anything else.
+    # This is the primary fix for TRIAGE_THINK_MODE=True: the <think> block
+    # often contains JSON-like { } syntax that breaks the greedy regex below.
+    text = _strip_think_tags(raw.strip())
 
     # Strategy 1: direct parse
     try:
@@ -136,13 +166,51 @@ def _parse_json(raw: str) -> dict:
     except json.JSONDecodeError:
         pass
 
-    # Strategy 3: find first { ... } block
-    match = re.search(r"\{.*\}", text, re.DOTALL)
-    if match:
-        try:
-            return json.loads(match.group())
-        except json.JSONDecodeError:
-            pass
+    # Strategy 3: balanced-brace extraction (largest JSON object wins).
+    # Walk all opening-brace positions left-to-right, scan forward counting
+    # brace depth until balanced, then attempt json.loads on that candidate.
+    # Collect every valid candidate and pick the largest one.  The outermost
+    # wrapper object is always larger than any nested object inside it, so this
+    # correctly extracts the root JSON even when the model wraps it in
+    # preamble text or the JSON contains nested objects.
+    matches = list(re.finditer(r"\{", text))
+    best: dict | None = None
+    best_len = 0
+    for m in matches:
+        candidate = text[m.start():]
+        depth = 0
+        end = -1
+        in_str = False
+        esc = False
+        for idx, ch in enumerate(candidate):
+            if esc:
+                esc = False
+                continue
+            if ch == "\\" and in_str:
+                esc = True
+                continue
+            if ch == '"':
+                in_str = not in_str
+                continue
+            if in_str:
+                continue
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    end = idx
+                    break
+        if end != -1:
+            try:
+                parsed = json.loads(candidate[:end + 1])
+                if isinstance(parsed, dict) and len(candidate) > best_len:
+                    best = parsed
+                    best_len = len(candidate)
+            except json.JSONDecodeError:
+                continue
+    if best is not None:
+        return best
 
     # Strategy 4: structural repair of truncated JSON
     candidate = fenced.strip() if fenced.strip().startswith("{") else text
@@ -161,70 +229,66 @@ def _repair_truncated_json(text: str) -> dict:
     """
     Close an incomplete JSON object that was cut off mid-stream.
 
-    Walks the string tracking open brace/bracket depth (ignoring content inside
-    strings), then appends the necessary closing characters and retries
-    json.loads().  Strips trailing dangling commas, partial keys, and unclosed
-    string values before closing.
+    Walks the string tracking open brace/bracket depth (ignoring content
+    inside strings), then appends the necessary closing characters.
+
+    Raises ValueError if the result still cannot be parsed.
     """
-    s = text.strip()
-    if not s.startswith("{"):
-        raise ValueError("Not a JSON object")
-
     stack: list[str] = []
-    in_str = False
-    esc = False
+    in_string = False
+    escape_next = False
 
-    for ch in s:
-        if esc:
-            esc = False
+    for ch in text:
+        if escape_next:
+            escape_next = False
             continue
-        if ch == "\\" and in_str:
-            esc = True
+        if ch == "\\":
+            if in_string:
+                escape_next = True
             continue
         if ch == '"':
-            in_str = not in_str
+            in_string = not in_string
             continue
-        if in_str:
+        if in_string:
             continue
         if ch in ("{", "["):
             stack.append(ch)
-        elif ch == "}" and stack and stack[-1] == "{":
-            stack.pop()
-        elif ch == "]" and stack and stack[-1] == "[":
-            stack.pop()
+        elif ch in ("}", "]"):
+            if stack:
+                stack.pop()
 
-    if not stack:
-        raise ValueError("Stack balanced — structurally complete but still invalid")
+    if not stack and not in_string:
+        raise ValueError("JSON is not truncated or cannot be repaired")
 
-    trimmed = s.rstrip()
-    for bad_suffix in ('",', '",\n', ",", "{\n", "{"):
-        if trimmed.endswith(bad_suffix):
-            trimmed = trimmed[: -len(bad_suffix)]
-            break
-    if trimmed.count('"') % 2 != 0:
-        last_quote = trimmed.rfind('"')
-        trimmed = trimmed[:last_quote].rstrip().rstrip(",")
+    # Trim trailing garbage (dangling commas, unclosed strings)
+    trimmed = text.rstrip()
+    if in_string:
+        trimmed += '"'  # close the open string
+    trimmed = trimmed.rstrip(",").rstrip()
 
+    # Append closers in reverse stack order
     closers = "".join("}" if ch == "{" else "]" for ch in reversed(stack))
-    repaired = trimmed.rstrip(",").rstrip() + closers
+    repaired = trimmed + closers
 
     try:
         return json.loads(repaired)
     except json.JSONDecodeError as exc:
-        raise ValueError(f"Repair failed: {exc}") from exc
+        raise ValueError(f"Structural repair failed: {exc}") from exc
 
 
-def _normalise_severity(value: object) -> str:
-    """Coerce severity to one of the four valid labels; default to 'unknown'."""
-    valid = {"mild", "moderate", "severe", "critical"}
-    s = str(value).lower().strip()
-    return s if s in valid else "unknown"
+_VALID_SEVERITIES = {"mild", "moderate", "severe", "critical"}
 
 
-def _to_str_list(value: object) -> list[str]:
-    """Coerce value to list[str], handling None / non-list gracefully."""
-    if isinstance(value, list):
-        return [str(item) for item in value]
-    if value is None or value == "":
+def _normalise_severity(raw: object) -> str:
+    if not isinstance(raw, str):
+        return "unknown"
+    val = raw.strip().lower()
+    return val if val in _VALID_SEVERITIES else "unknown"
+
+
+def _to_str_list(raw: object) -> list[str]:
+    if raw is None:
         return []
-    return [str(value)]
+    if isinstance(raw, list):
+        return raw  # type: ignore[return-value]
+    return [raw]  # type: ignore[list-item]
