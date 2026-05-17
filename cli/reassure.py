@@ -16,7 +16,6 @@ Privacy: no audio, no PII stored; session ends cleanly.
 from __future__ import annotations
 
 import argparse
-import sys
 
 from rich.console import Console
 from rich.panel import Panel
@@ -76,7 +75,7 @@ def cmd_reassure(args: argparse.Namespace) -> None:
             lang_display = LANGUAGE_DISPLAY.get(lang_code, lang_code)
             if lang_code == "en":
                 translated = phrase
-                console.print(f"\n[dim]Patient language is English — no translation needed.[/dim]")
+                console.print("\n[dim]Patient language is English — no translation needed.[/dim]")
             else:
                 console.print(f"\n[cyan]Translating to {lang_display} (Gemma 4)…[/cyan]")
                 try:
@@ -189,7 +188,10 @@ def _pick_language() -> str | None:
         if raw in _SUPPORTED_LANGS:
             return raw
 
-        console.print(f"[yellow]Unrecognised code. Choose from: {', '.join(_SUPPORTED_LANGS)}[/yellow]")
+        console.print(
+            f"[yellow]Unrecognised code. Choose from:"
+            f" {', '.join(_SUPPORTED_LANGS)}[/yellow]"
+        )
 
 
 def _ask_retry(prompt: str) -> bool:

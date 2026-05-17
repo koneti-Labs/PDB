@@ -28,7 +28,7 @@ from __future__ import annotations
 import json
 import sys
 import types
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -52,8 +52,12 @@ if "ollama" not in sys.modules:
 # ---------------------------------------------------------------------------
 # Imports under test
 # ---------------------------------------------------------------------------
-from core.engine import GemmaEngine, InferenceMode, MODELS
-from translation.triage import TriageService, TriageResult, _parse_json, _normalise_severity, _to_str_list
+from core.engine import MODELS, GemmaEngine, InferenceMode
+from translation.triage import (
+    TriageService,
+    _normalise_severity,
+    _to_str_list,
+)
 
 # ---------------------------------------------------------------------------
 # Fixtures

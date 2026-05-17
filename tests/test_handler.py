@@ -16,9 +16,8 @@ import numpy as np
 import pytest
 from scipy.io.wavfile import write as wav_write
 
-from audio.handler import AudioHandler, TranscriptResult
+from audio.handler import AudioHandler
 from config.settings import SAMPLE_RATE
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -34,7 +33,9 @@ def _write_temp_wav(duration_s: float = 3.0) -> Path:
     return Path(tmp.name)
 
 
-def _make_handler_with_mock_model(monkeypatch, probs: dict, transcript: str = "test") -> AudioHandler:
+def _make_handler_with_mock_model(
+    monkeypatch, probs: dict, transcript: str = "test",
+) -> AudioHandler:
     """
     Build an AudioHandler whose _model is fully mocked so no Whisper
     download or inference occurs.

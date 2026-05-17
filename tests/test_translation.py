@@ -7,12 +7,13 @@ GemmaEngine is mocked so tests are pure prompt-construction verification.
 """
 from __future__ import annotations
 
-import pytest
 from unittest.mock import MagicMock
 
-from translation.service import TranslationService
-from translation.prompts import PATIENT_TO_DOCTOR_PROMPT, DOCTOR_TO_PATIENT_PROMPT
+import pytest
+
 from config.languages import LANGUAGE_DISPLAY
+from translation.prompts import DOCTOR_TO_PATIENT_PROMPT, PATIENT_TO_DOCTOR_PROMPT
+from translation.service import TranslationService
 
 
 def _service_with_mock(return_text: str = "translated") -> tuple[TranslationService, MagicMock]:

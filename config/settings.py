@@ -59,8 +59,8 @@ MODEL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 # Ollama (Phase 2+) — local inference, nothing leaves the device
 # ---------------------------------------------------------------------------
 OLLAMA_HOST: str = "http://localhost:11434"
-OLLAMA_TIMEOUT: int = 120            # seconds -- fast translation (gemma4:e2b)
-OLLAMA_TIMEOUT_REASONING: int = 600  # seconds -- triage/OCR (vision is slow on CPU)
+OLLAMA_TIMEOUT: int = 180            # seconds -- fast translation (gemma4:e2b)
+OLLAMA_TIMEOUT_REASONING: int = 900  # seconds -- triage/OCR (vision is slow on CPU)
 
 # Web server (Phase 6 UI)
 WEB_HOST: str = "127.0.0.1"
@@ -71,7 +71,8 @@ WEB_PORT: int = 5000
 # ---------------------------------------------------------------------------
 GEMMA_TEMPERATURE: float = 0.2     # low = more deterministic translations
 GEMMA_TOP_P: float = 0.9
-GEMMA_NUM_CTX: int = 8192          # full context window for reasoning/OCR (raised to fit image + JSON output)
+# full context window for reasoning/OCR (raised to fit image + JSON output)
+GEMMA_NUM_CTX: int = 8192
 GEMMA_NUM_CTX_FAST: int = 2048     # context window for translation/reassure.
                                    # Root-cause fix: 512 was too small for gemma4:e2b — the model
                                    # was truncating context and returning empty output.  2048 gives
@@ -79,8 +80,10 @@ GEMMA_NUM_CTX_FAST: int = 2048     # context window for translation/reassure.
 
 # Output length caps -- prevents the model from running off and producing
 # multi-paragraph trailing chatter that adds seconds per request.
-GEMMA_NUM_PREDICT_FAST: int = 512        # raised from 256; accommodates longer Indic translations
-GEMMA_NUM_PREDICT_REASONING: int = 4096  # triage JSON + prescription OCR (raised from 1024 to prevent truncation)
+# raised from 256; accommodates longer Indic translations
+GEMMA_NUM_PREDICT_FAST: int = 512
+# triage JSON + prescription OCR (raised from 1024 to prevent truncation)
+GEMMA_NUM_PREDICT_REASONING: int = 4096
 
 # Hold the model in (V)RAM between calls.  Without this Ollama unloads
 # after ~5 minutes idle (its default), and the next request pays a ~20-60s
@@ -129,3 +132,48 @@ INFERENCE_POOL_SIZE: int = 3
 #
 # Preloading runs in a ThreadPoolExecutor so all languages load simultaneously.
 TTS_PREWARM_LANGS: list[str] = []  # change to ["hi","te","kn","ta"] for eager load
+
+
+# ---------------------------------------------------------------------------
+# Configuration validation
+# ---------------------------------------------------------------------------
+
+def validate_settings() -> list[str]:
+    """Check that settings are reasonable; return a list of warnings (empty = OK)."""
+    warnings: list[str] = []
+
+    if OLLAMA_TIMEOUT <= 0:
+        warnings.append(f"OLLAMA_TIMEOUT must be positive, got {OLLAMA_TIMEOUT}")
+    if OLLAMA_TIMEOUT_REASONING <= 0:
+        warnings.append(
+            f"OLLAMA_TIMEOUT_REASONING must be positive, got {OLLAMA_TIMEOUT_REASONING}"
+        )
+    if OLLAMA_TIMEOUT_REASONING < OLLAMA_TIMEOUT:
+        warnings.append(
+            f"OLLAMA_TIMEOUT_REASONING ({OLLAMA_TIMEOUT_REASONING}) is less than "
+            f"OLLAMA_TIMEOUT ({OLLAMA_TIMEOUT}); reasoning tasks need more time"
+        )
+
+    # Validate model names match the required gemma4:* pattern
+    # (import here to avoid circular dependency at module level)
+    try:
+        from core.engine import MODELS
+        for mode, model_tag in MODELS.items():
+            if not model_tag.startswith("gemma4:"):
+                warnings.append(
+                    f"Model for {mode.value} is '{model_tag}' — "
+                    f"only gemma4:* tags are permitted"
+                )
+    except ImportError:
+        pass  # core.engine not available yet during early init
+
+    return warnings
+
+
+# Run validation at import time so misconfigurations are caught early.
+_settings_warnings = validate_settings()
+if _settings_warnings:
+    import logging as _logging
+    _settings_logger = _logging.getLogger(__name__)
+    for _w in _settings_warnings:
+        _settings_logger.warning("config/settings.py: %s", _w)

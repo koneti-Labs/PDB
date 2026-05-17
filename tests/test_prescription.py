@@ -7,17 +7,15 @@ All Ollama / GemmaEngine calls are mocked.
 from __future__ import annotations
 
 import json
-import pytest
 from unittest.mock import MagicMock
 
+import pytest
+
 from translation.prescription import (
-    MedicineItem,
-    PrescriptionResult,
     PrescriptionService,
     _normalise_medicines,
     _parse_json,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers

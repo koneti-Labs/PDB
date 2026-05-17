@@ -145,10 +145,11 @@ def cmd_bridge(args: argparse.Namespace) -> None:
                 )
 
                 # Translate doctor → patient (use patient's detected language)
+                pat_lang = patient_result['language']
+                lang_disp = LANGUAGE_DISPLAY.get(pat_lang, pat_lang)
                 console.print(
                     f"[cyan]Translating for patient "
-                    f"({LANGUAGE_DISPLAY.get(patient_result['language'], patient_result['language'])}) "
-                    f"(Gemma 4)...[/cyan]"
+                    f"({lang_disp}) (Gemma 4)...[/cyan]"
                 )
                 try:
                     for_patient = service.doctor_to_patient(

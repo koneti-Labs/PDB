@@ -30,7 +30,7 @@ from rich.table import Table
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config.hardware import HARDWARE, print_hardware_report
-from core.engine import GemmaEngine, InferenceMode, MODELS
+from core.engine import MODELS, GemmaEngine, InferenceMode
 
 app = typer.Typer(add_completion=False)
 console = Console()

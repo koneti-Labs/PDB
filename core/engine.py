@@ -20,6 +20,8 @@ Performance notes:
 """
 from __future__ import annotations
 
+import logging
+import time
 from enum import Enum
 from typing import Any
 
@@ -34,12 +36,14 @@ from config.settings import (
     OLLAMA_TIMEOUT_REASONING,
 )
 
+logger = logging.getLogger(__name__)
+
 # Dynamic import — generation knobs are read from this module at CALL TIME
 # (not captured at import time) so that runtime patches applied by the
 # notebook patch cell or by server.py self-healing take immediate effect.
 # Previously the "from … import" approach captured GEMMA_NUM_CTX_FAST=512
 # at import time, making runtime patches invisible to generate().
-import config.settings as _cfg
+import config.settings as _cfg  # noqa: E402
 
 console = Console()
 
@@ -220,56 +224,107 @@ class GemmaEngine:
         if think:
             generate_kwargs["think"] = True
 
-        try:
-            response = client.generate(**generate_kwargs)
-        except TypeError as exc:
-            # Older Ollama SDK (<0.5) does not support the 'think' keyword.
-            # Retry without it so the call still succeeds.
-            if "think" in str(exc) and "think" in generate_kwargs:
-                generate_kwargs.pop("think")
-                try:
-                    response = client.generate(**generate_kwargs)
-                except Exception as exc2:
-                    error_msg = str(exc2)
-                    if "not found" in error_msg.lower() or "no such file" in error_msg.lower():
-                        raise RuntimeError(
-                            f"Model not found: {model}\n"
-                            f"Available models can be checked with: ollama list\n"
-                            f"Pull the model with: ollama pull {model}\n"
-                            f"Original error: {exc2}"
-                        ) from exc2
-                    else:
-                        raise RuntimeError(
-                            f"Ollama inference failed (model={model}): {exc2}\n"
-                            "Make sure Ollama is running and the model is pulled:\n"
-                            f"  ollama pull {model}"
-                        ) from exc2
-            else:
-                raise RuntimeError(
-                    f"Ollama inference failed (model={model}): {exc}\n"
-                    "Make sure Ollama is running and the model is pulled:\n"
-                    f"  ollama pull {model}"
-                ) from exc
-        except Exception as exc:
-            error_msg = str(exc)
-            if "connection" in error_msg.lower() or "refused" in error_msg.lower():
-                raise RuntimeError(
-                    f"Cannot connect to Ollama at {OLLAMA_HOST}\n"
-                    "Make sure Ollama is running:\n"
-                    f"  ollama serve"
-                ) from exc
-            elif "not found" in error_msg.lower() or "no such file" in error_msg.lower():
-                raise RuntimeError(
-                    f"Model not found: {model}\n"
-                    f"Available models can be checked with: ollama list\n"
-                    f"Pull the model with: ollama pull {model}"
-                ) from exc
-            else:
-                raise RuntimeError(
-                    f"Ollama inference failed (model={model}): {exc}\n"
-                    "Make sure Ollama is running and the model is pulled:\n"
-                    f"  ollama pull {model}"
-                ) from exc
+        # Determine the effective timeout for error messages
+        effective_timeout = (
+            OLLAMA_TIMEOUT_REASONING
+            if (mode == InferenceMode.REASONING_EXTRACTION or use_reasoning_client)
+            else OLLAMA_TIMEOUT
+        )
+
+        max_retries = 3
+        retry_delays = [1, 2, 4]  # exponential backoff in seconds
+
+        for attempt in range(1, max_retries + 1):
+            try:
+                response = client.generate(**generate_kwargs)
+                break  # success
+            except TypeError as exc:
+                # Older Ollama SDK (<0.5) does not support the 'think' keyword.
+                # Retry without it so the call still succeeds.
+                if "think" in str(exc) and "think" in generate_kwargs:
+                    generate_kwargs.pop("think")
+                    try:
+                        response = client.generate(**generate_kwargs)
+                        break  # success on fallback
+                    except Exception as exc2:
+                        error_msg = str(exc2)
+                        if "not found" in error_msg.lower() or "no such file" in error_msg.lower():
+                            raise RuntimeError(
+                                f"Model not found: {model}\n"
+                                f"Available models can be checked with: ollama list\n"
+                                f"Pull the model with: ollama pull {model}\n"
+                                f"Original error: {exc2}"
+                            ) from exc2
+                        else:
+                            raise RuntimeError(
+                                f"Ollama inference failed (model={model}): {exc2}\n"
+                                "Make sure Ollama is running and the model is pulled:\n"
+                                f"  ollama pull {model}"
+                            ) from exc2
+                else:
+                    raise RuntimeError(
+                        f"Ollama inference failed (model={model}): {exc}\n"
+                        "Make sure Ollama is running and the model is pulled:\n"
+                        f"  ollama pull {model}"
+                    ) from exc
+            except Exception as exc:
+                error_msg = str(exc)
+                is_timeout = "timeout" in error_msg.lower() or "timed out" in error_msg.lower()
+                is_connection = "connection" in error_msg.lower() or "refused" in error_msg.lower()
+                is_not_found = (
+                    "not found" in error_msg.lower()
+                    or "no such file" in error_msg.lower()
+                )
+
+                # Never retry model-not-found errors
+                if is_not_found:
+                    raise RuntimeError(
+                        f"Model not found: {model}\n"
+                        f"Available models can be checked with: ollama list\n"
+                        f"Pull the model with: ollama pull {model}"
+                    ) from exc
+
+                # Retry on timeout or connection errors
+                if (is_timeout or is_connection) and attempt < max_retries:
+                    delay = retry_delays[attempt - 1]
+                    logger.warning(
+                        "Ollama %s error (model=%s, attempt %d/%d), "
+                        "retrying in %ds: %s",
+                        "timeout" if is_timeout else "connection",
+                        model, attempt, max_retries, delay, exc,
+                    )
+                    console.print(
+                        f"[yellow]⚠ Ollama {'timeout' if is_timeout else 'connection'} "
+                        f"error (attempt {attempt}/{max_retries}), "
+                        f"retrying in {delay}s…[/yellow]"
+                    )
+                    time.sleep(delay)
+                    continue
+
+                # Final attempt or non-retryable error
+                if is_timeout:
+                    raise RuntimeError(
+                        f"Ollama request timed out after {effective_timeout}s "
+                        f"(model={model}).\n"
+                        f"Suggestions:\n"
+                        f"  • Increase OLLAMA_TIMEOUT / OLLAMA_TIMEOUT_REASONING "
+                        f"in config/settings.py\n"
+                        f"  • Check system load — CPU inference is slow under "
+                        f"heavy load\n"
+                        f"  • Ensure Ollama is running: ollama serve"
+                    ) from exc
+                elif is_connection:
+                    raise RuntimeError(
+                        f"Cannot connect to Ollama at {OLLAMA_HOST}\n"
+                        "Make sure Ollama is running:\n"
+                        f"  ollama serve"
+                    ) from exc
+                else:
+                    raise RuntimeError(
+                        f"Ollama inference failed (model={model}): {exc}\n"
+                        "Make sure Ollama is running and the model is pulled:\n"
+                        f"  ollama pull {model}"
+                    ) from exc
 
         # response.response is a str (Ollama SDK >= 0.2 returns a Pydantic
         # SubscriptableBaseModel, so both response["response"] and
@@ -373,6 +428,7 @@ class GemmaEngine:
             Raw JSON string from Gemma 4.
         """
         import base64
+
         from translation.prompts import PRESCRIPTION_OCR_PROMPT
 
         with open(image_path, "rb") as f:
@@ -444,7 +500,6 @@ class GemmaEngine:
             prompt,
             mode=InferenceMode.FAST_TRANSLATION,
             num_predict=1024,
-            use_reasoning_client=True,
         )
 
     # ------------------------------------------------------------------
@@ -546,7 +601,6 @@ class GemmaEngine:
         Uses .models attribute on the Pydantic ListResponse object returned
         by ollama.Client.list() (SDK >= 0.2).
         """
-        results: dict[str, bool] = {}
         try:
             models_resp = self._client.list()
             # models_resp is a ListResponse (SubscriptableBaseModel).

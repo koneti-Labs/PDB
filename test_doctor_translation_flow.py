@@ -8,12 +8,12 @@ It mocks the engine and verifies that:
 3. The prompts are formatted correctly
 4. The server endpoint calls the correct methods
 """
-from unittest.mock import MagicMock, patch
-from translation.service import TranslationService
-from translation.prompts import DOCTOR_TO_PATIENT_PROMPT
+from unittest.mock import MagicMock
+
 from config.languages import LANGUAGE_DISPLAY
 from core.engine import InferenceMode
-import json
+from translation.prompts import DOCTOR_TO_PATIENT_PROMPT
+from translation.service import TranslationService
 
 print("=" * 80)
 print("DOCTOR-TO-PATIENT TRANSLATION FLOW TEST")
@@ -26,7 +26,8 @@ print("✓ doctor_to_patient method exists")
 
 # Test 2: Verify doctor_to_patient accepts correct parameters
 print("\n[TEST 2] doctor_to_patient method signature")
-import inspect
+import inspect  # noqa: E402
+
 sig = inspect.signature(TranslationService.doctor_to_patient)
 params = list(sig.parameters.keys())
 assert params == ['self', 'text', 'lang_code'], f"Unexpected parameters: {params}"
@@ -63,11 +64,11 @@ service.doctor_to_patient("Some text", "hi")
 call_kwargs = mock_engine.generate.call_args.kwargs
 mode = call_kwargs.get('mode')
 assert mode == InferenceMode.FAST_TRANSLATION, f"Wrong mode: {mode}"
-print(f"✓ Uses InferenceMode.FAST_TRANSLATION (correct for doctor-to-patient)")
+print("✓ Uses InferenceMode.FAST_TRANSLATION (correct for doctor-to-patient)")
 
 # Test 6: Verify the response cleaning
 print("\n[TEST 6] Response cleaning (echo label removal)")
-from core.engine import _clean_response
+from core.engine import _clean_response  # noqa: E402
 
 test_cases = [
     ("Hindi for patient: टैबलेट दिन में दो बार लें", "टैबलेट दिन में दो बार लें"),

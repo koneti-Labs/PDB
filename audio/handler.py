@@ -36,7 +36,6 @@ from typing import TypedDict
 from rich.console import Console
 
 from audio.language_id import constrain_and_renormalize
-from config.languages import SUPPORTED_LANG_CODES
 from config.settings import (
     MODEL_CACHE_DIR,
     WHISPER_BEAM_SIZE,

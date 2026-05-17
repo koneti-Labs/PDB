@@ -6,14 +6,14 @@ All GemmaEngine calls are mocked.
 """
 from __future__ import annotations
 
-import pytest
 from unittest.mock import MagicMock
+
+import pytest
 
 from translation.reassurance import (
     REASSURANCE_PHRASES,
     ReassuranceService,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -95,13 +95,13 @@ class TestReassuranceServiceTranslate:
     def test_kannada_calls_engine(self):
         eng = _engine_returning("ಸಹಾಯ ಬರುತ್ತಿದೆ.")
         svc = ReassuranceService(eng)
-        result = svc.translate("Help is coming. You are safe.", "kn")
+        svc.translate("Help is coming. You are safe.", "kn")
         eng.emergency_reassurance.assert_called_once()
 
     def test_tamil_calls_engine(self):
         eng = _engine_returning("உதவி வருகிறது.")
         svc = ReassuranceService(eng)
-        result = svc.translate("Help is coming. You are safe.", "ta")
+        svc.translate("Help is coming. You are safe.", "ta")
         eng.emergency_reassurance.assert_called_once()
 
     def test_engine_receives_correct_phrase_and_lang(self):

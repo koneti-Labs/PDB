@@ -58,6 +58,7 @@ console = Console()
 # Guarantee the correct context window is in effect for gemma4:e2b regardless
 # of when config.settings was first imported by this Python process.
 import config.settings as _cfg_patch  # noqa: E402
+
 _cfg_patch.GEMMA_NUM_CTX_FAST     = 2048
 _cfg_patch.GEMMA_NUM_PREDICT_FAST = 512
 
@@ -393,6 +394,7 @@ def create_app() -> Flask:
                     console.print(
                         f"[yellow]⚠ Prescription translation failed: {trans_exc}[/yellow]"
                     )
+                    traceback.print_exc()
                     response_data["translated_summary"] = ""
                     response_data["summary_language"] = lang_code
                     response_data["translation_error"] = str(trans_exc)
@@ -467,13 +469,11 @@ def _handle_audio_translation(role: str):
             # Doctor's audio is always English — lock Whisper, skip detection.
             result = handler.transcribe_locked(tmp_path, language="en")
         else:
-            # Patient turn: use the language the patient selected in the UI
-            # dropdown (transcribe_locked) instead of auto-detection.
-            # Reason: Whisper auto-detection occasionally returns a mix of
-            # scripts when audio quality is low, or defaults to a wrong
-            # language (e.g. "ur" instead of "hi").  The user has already
-            # explicitly told us which language they're speaking, so we use it.
-            result = handler.transcribe_locked(tmp_path, language=lang_code)
+            # Patient turn: use auto-detection so the system automatically
+            # recognises whichever supported language the patient speaks
+            # (hi, te, kn, ta, en).  The transcribe() method has built-in
+            # constrained fallback to these five languages.
+            result = handler.transcribe(tmp_path)
         transcript = result["text"]
         detected_lang = result["language"]
 
@@ -545,9 +545,9 @@ def run_server(
     h = host or WEB_HOST
     p = port or WEB_PORT
     app = create_app()
-    console.print(f"[bold cyan]PatientDoctorBridge Web UI[/bold cyan]")
+    console.print("[bold cyan]PatientDoctorBridge Web UI[/bold cyan]")
     console.print(f"[dim]Open in browser: http://{h}:{p}/[/dim]")
-    console.print(f"[dim]All inference runs locally via Ollama (Gemma 4).[/dim]")
+    console.print("[dim]All inference runs locally via Ollama (Gemma 4).[/dim]")
 
     # ── Parallel startup warmup ───────────────────────────────────────────────
     # Three independent warmup jobs run simultaneously using plain threads
@@ -562,6 +562,7 @@ def run_server(
     # All three release the GIL during their heavy work (disk I/O, HTTP,
     # PyTorch), so they run in true parallel on multi-core hardware.
     import threading
+
     import config.settings as _cfg_startup
 
     console.print(
