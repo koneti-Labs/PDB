@@ -16,7 +16,6 @@ This module provides:
 """
 from __future__ import annotations
 
-import re
 from rich.console import Console
 
 console = Console()
@@ -25,43 +24,43 @@ console = Console()
 class ScriptNormalizer:
     """
     Normalize Hindi transcriptions to Devanagari script.
-    
+
     Detects if Whisper output is in Urdu (Arabic) script and converts
     it to Devanagari if needed.
     """
-    
+
     # Unicode ranges
     DEVANAGARI_RANGE = (0x0900, 0x097F)  # Devanagari block
     ARABIC_RANGE = (0x0600, 0x06FF)      # Arabic block (used for Urdu)
     ARABIC_SUPPLEMENT = (0x0750, 0x077F)  # Arabic Supplement
     ARABIC_EXTENDED = (0x08A0, 0x08FF)    # Arabic Extended-A
-    
+
     def __init__(self):
         pass
-    
+
     def detect_script(self, text: str) -> str:
         """
         Detect the primary script used in text.
-        
+
         Parameters
         ----------
         text:
             Text to analyze
-        
+
         Returns
         -------
         Script type: "devanagari", "arabic", "latin", "romanized", or "mixed"
         """
         if not text:
             return "latin"
-        
+
         devanagari_count = 0
         arabic_count = 0
         latin_count = 0
-        
+
         for char in text:
             code = ord(char)
-            
+
             # Check Devanagari
             if self.DEVANAGARI_RANGE[0] <= code <= self.DEVANAGARI_RANGE[1]:
                 devanagari_count += 1
@@ -73,12 +72,12 @@ class ScriptNormalizer:
             # Check Latin
             elif (ord('A') <= code <= ord('Z')) or (ord('a') <= code <= ord('z')):
                 latin_count += 1
-        
+
         total_script_chars = devanagari_count + arabic_count + latin_count
-        
+
         if total_script_chars == 0:
             return "latin"
-        
+
         # Determine primary script
         if devanagari_count > arabic_count and devanagari_count > latin_count:
             return "devanagari"
@@ -91,15 +90,15 @@ class ScriptNormalizer:
             return "latin"
         else:
             return "mixed"
-    
+
     def _is_romanized_indic(self, text: str) -> bool:
         """
         Detect if text is romanized Indic language (Hindi/Telugu/etc in Latin script).
-        
+
         Uses heuristics like presence of common Indic words in romanized form.
         """
         text_lower = text.lower()
-        
+
         # Common Hindi words in romanized form
         hindi_indicators = [
             'hai', 'hain', 'mein', 'aur', 'ka', 'ki', 'ke', 'ko', 'se', 'ne',
@@ -107,27 +106,27 @@ class ScriptNormalizer:
             'kaise', 'kahan', 'kyun', 'jab', 'tab', 'yeh', 'woh', 'yahan',
             'dhar', 'dhaha', 'bukhar', 'dard', 'pate', 'pet', 'sir', 'bhe'
         ]
-        
+
         # Count how many indicators are present
         matches = sum(1 for word in hindi_indicators if word in text_lower)
-        
+
         # If we find 2+ indicators, likely romanized Hindi
         return matches >= 2
-    
+
     def normalize_hindi_script(self, text: str, detected_language: str) -> str:
         """
         Normalize Hindi text to Devanagari script.
-        
+
         If the detected language is Hindi ("hi") but the text is in
         Urdu/Arabic script, attempt to transliterate it to Devanagari.
-        
+
         Parameters
         ----------
         text:
             Transcribed text from Whisper
         detected_language:
             ISO 639-1 language code (e.g., "hi", "ur", "en")
-        
+
         Returns
         -------
         Normalized text in Devanagari (if Hindi) or original text
@@ -135,13 +134,13 @@ class ScriptNormalizer:
         if not text or detected_language != "hi":
             # Only process Hindi language
             return text
-        
+
         script = self.detect_script(text)
-        
+
         if script == "devanagari":
             # Already in correct script
             return text
-        
+
         if script == "arabic":
             # Urdu script detected for Hindi language - needs transliteration
             console.print(
@@ -149,7 +148,7 @@ class ScriptNormalizer:
                 "applying transliteration to Devanagari[/yellow]"
             )
             return self._transliterate_urdu_to_hindi(text)
-        
+
         if script == "mixed":
             # Mixed script - try to fix Arabic portions
             console.print(
@@ -157,28 +156,28 @@ class ScriptNormalizer:
                 "normalizing to Devanagari[/yellow]"
             )
             return self._transliterate_urdu_to_hindi(text)
-        
+
         # Latin or other - return as is
         return text
-    
+
     def _transliterate_urdu_to_hindi(self, text: str) -> str:
         """
         Transliterate Urdu (Arabic script) to Hindi (Devanagari).
-        
+
         This is a basic phonetic mapping. For production use, consider
         using a library like `indic-transliteration` or an API.
-        
+
         Note: This is a simplified mapping and may not be perfect.
         For better results, consider using:
         - indic-transliteration library
         - Google Translate API
         - IndicTrans2 model
-        
+
         Parameters
         ----------
         text:
             Text in Urdu script
-        
+
         Returns
         -------
         Text transliterated to Devanagari
@@ -186,7 +185,7 @@ class ScriptNormalizer:
         # Basic Urdu to Hindi character mapping
         # This is a simplified mapping - a full implementation would need
         # more sophisticated handling of diacritics, conjuncts, etc.
-        
+
         urdu_to_devanagari = {
             # Vowels
             'ا': 'अ',
@@ -239,7 +238,7 @@ class ScriptNormalizer:
             'ّ': '्',
             'ْ': '',
         }
-        
+
         # Apply character-by-character transliteration
         result = []
         for char in text:
@@ -247,14 +246,14 @@ class ScriptNormalizer:
                 result.append(urdu_to_devanagari[char])
             else:
                 result.append(char)
-        
+
         transliterated = ''.join(result)
-        
+
         # Log the transliteration
         console.print(f"[dim]Transliterated: {text[:50]}... → {transliterated[:50]}...[/dim]")
-        
+
         return transliterated
-    
+
     def should_retranscribe(self, text: str, detected_language: str, confidence: float) -> bool:
         """
         Determine if audio should be re-transcribed with language locked to native script.
