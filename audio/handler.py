@@ -162,12 +162,12 @@ class AudioHandler:
         try:
             # Load and preprocess audio for better quality
             audio_data = self._load_audio_for_preprocessing(audio_path)
-            
+
             # Analyze audio quality
             quality_metrics = self.preprocessor.analyze_and_log(
                 audio_data, sample_rate=16000, label="patient"
             )
-            
+
             # Preprocess audio if quality is poor
             if not quality_metrics["is_acceptable"]:
                 console.print("[yellow]Applying audio preprocessing to improve quality...[/yellow]")
@@ -177,7 +177,7 @@ class AudioHandler:
                 transcribe_path = temp_preprocessed
             else:
                 transcribe_path = audio_path
-            
+
             # One-pass: transcribe with language=None so Whisper auto-detects.
             # TranscriptionInfo.all_language_probs gives the full distribution --
             # we apply our 5-language constraint without a separate encode pass.
@@ -222,7 +222,7 @@ class AudioHandler:
                 )
                 segs2 = _raw2[0] if isinstance(_raw2, tuple) else _raw2
                 text = " ".join(seg.text for seg in segs2).strip()
-            
+
             # Check if we need to re-transcribe due to script mismatch
             # (e.g., Hindi detected but transcribed in Urdu script or romanized)
             if self.script_normalizer.should_retranscribe(text, language, confidence):
@@ -242,7 +242,7 @@ class AudioHandler:
                 )
                 segs3 = _raw3[0] if isinstance(_raw3, tuple) else _raw3
                 text = " ".join(seg.text for seg in segs3).strip()
-            
+
             # Normalize script for Hindi (convert Urdu script to Devanagari if needed)
             text = self.script_normalizer.normalize_hindi_script(text, language)
 
@@ -377,38 +377,39 @@ class AudioHandler:
     def _load_audio_for_preprocessing(self, audio_path: Path) -> np.ndarray:
         """
         Load audio file for preprocessing analysis.
-        
+
         Returns audio as numpy array (int16 or float32).
         """
         try:
             from faster_whisper.audio import decode_audio
         except ImportError:
             from faster_whisper import decode_audio  # type: ignore[no-redef]
-        
+
         audio = decode_audio(str(audio_path), sampling_rate=16_000)
         return audio
-    
+
     def _save_preprocessed_audio(self, audio: np.ndarray, original_path: Path) -> Path:
         """
         Save preprocessed audio to a temporary file.
-        
+
         Parameters
         ----------
         audio:
             Preprocessed audio as float32 numpy array
         original_path:
             Original audio file path (for naming)
-        
+
         Returns
         -------
         Path to the temporary preprocessed audio file
         """
         import tempfile
+
         from scipy.io.wavfile import write as wav_write
-        
+
         # Convert float32 to int16 for WAV
         audio_int16 = (audio * 32767).astype(np.int16)
-        
+
         # Create temp file
         tmp = tempfile.NamedTemporaryFile(
             suffix="_preprocessed.wav",
@@ -417,9 +418,9 @@ class AudioHandler:
         )
         wav_write(tmp.name, 16000, audio_int16)
         tmp.close()
-        
+
         return Path(tmp.name)
-    
+
     def _detect_language_probs(self, audio_path: Path) -> dict[str, float]:
         """
         Return Whisper's full language probability distribution as a dict.

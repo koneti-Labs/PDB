@@ -4,7 +4,6 @@ tests/test_audio_preprocessing.py
 Unit tests for audio preprocessing and script normalization.
 """
 import numpy as np
-import pytest
 
 from audio.preprocessor import AudioPreprocessor
 from audio.script_normalizer import ScriptNormalizer
@@ -23,7 +22,9 @@ class TestAudioPreprocessor:
         frequency = 440.0
         t = np.linspace(0, duration, int(sample_rate * duration))
         # Add amplitude variation to make it more realistic
-        audio = (np.sin(2 * np.pi * frequency * t) * (0.3 + 0.2 * np.sin(2 * np.pi * 2 * t))).astype(np.float32)
+        audio = (
+            np.sin(2 * np.pi * frequency * t) * (0.3 + 0.2 * np.sin(2 * np.pi * 2 * t))
+        ).astype(np.float32)
 
         metrics = preprocessor.analyze_quality(audio, sample_rate)
 
@@ -165,7 +166,9 @@ class TestScriptNormalizer:
         """Test detection of romanized Hindi text."""
         normalizer = ScriptNormalizer()
 
-        romanized_text = "mosaic pate mein dhar dhaha hai aur sir mein bhe dhar dhaha hai bukhar bhe hai"
+        romanized_text = (
+            "mosaic pate mein dhar dhaha hai aur sir mein bhe dhar dhaha hai bukhar bhe hai"
+        )
         script = normalizer.detect_script(romanized_text)
 
         assert script == "romanized"
