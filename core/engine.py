@@ -111,18 +111,43 @@ def _clean_response(text: str) -> str:
        Gemma 4 sometimes repeats the label that ends the prompt (e.g.
        "Hindi for patient:") before producing the actual translation.
 
-    Both steps are applied unconditionally so callers never see internal
-    model artefacts.
+    Safety net
+    ----------
+    If the two cleaning steps would together leave nothing behind (the
+    notorious "empty translation returned" bug), this function backs off
+    to the next-best non-empty intermediate result.  The order of
+    preference is:
+
+        cleaned-and-label-stripped > cleaned (think removed only) > raw
+
+    That guarantees we never silently return ``""`` to the UI; if the
+    model truly produced nothing, the caller receives an empty string
+    only because the raw response was already empty.
     """
+    raw = (text or "").strip()
+
     # Step 1: strip think-mode reasoning traces
-    stripped = _strip_think_tags(text)
+    think_stripped = _strip_think_tags(raw)
 
     # Step 2: strip echoed prompt labels (case-insensitive, prefix match only)
+    label_stripped = think_stripped
     for label in _PROMPT_LABELS:
-        if stripped.lower().startswith(label.lower()):
-            stripped = stripped[len(label):].strip()
+        if label_stripped.lower().startswith(label.lower()):
+            label_stripped = label_stripped[len(label):].strip()
             break
-    return stripped
+
+    # Prefer the fully-cleaned text, but back off rather than silently
+    # returning empty.  This was the root cause of "⚠ Empty translation
+    # returned" — when Gemma 4 emits ONLY a <think>...</think> block (often
+    # truncated by num_predict), stripping it left an empty string and
+    # the user saw "—" in the UI.  Returning the raw think-block-less
+    # output, or as a last resort the raw response, at least gives the
+    # caller diagnostic visibility.
+    if label_stripped:
+        return label_stripped
+    if think_stripped:
+        return think_stripped
+    return raw
 
 
 class GemmaEngine:
@@ -330,7 +355,103 @@ class GemmaEngine:
         # SubscriptableBaseModel, so both response["response"] and
         # response.response work; prefer attribute access for clarity).
         raw_text = response.response if hasattr(response, "response") else response["response"]
-        return _clean_response(raw_text)
+        raw_text = raw_text or ""
+        cleaned = _clean_response(raw_text)
+
+        # Always log a short trace of every Gemma response: length + first
+        # 120 chars.  This makes the recurring "empty translation" failure
+        # mode immediately visible in the server console without having to
+        # bolt extra debug code on top.  Costs nothing on the happy path.
+        console.print(
+            f"[dim]Gemma {model} raw={len(raw_text)}ch "
+            f"clean={len(cleaned)}ch "
+            f"first120={raw_text[:120].replace(chr(10), ' ')!r}[/dim]"
+        )
+
+        # ── Empty-response recovery ──────────────────────────────────────
+        # Two failure modes produce an empty cleaned result, both visible
+        # in production logs:
+        #
+        #   (1) gemma4:e2b emits only a <think>...</think> block (often
+        #       unclosed/truncated by num_predict); after _strip_think_tags
+        #       nothing is left.
+        #
+        #   (2) the model returns literally nothing or whitespace.  This
+        #       happens occasionally on Indic→English translation when the
+        #       sampler gets stuck at temperature=0.2.
+        #
+        # We retry exactly once on either condition with:
+        #   • think=False explicit (defeats spontaneous reasoning traces)
+        #   • num_predict doubled (room to actually finish the translation)
+        #   • temperature nudged up (escape any deterministic dead-ends)
+        # Capped at one retry so we never loop forever.
+        if (not cleaned) and (mode != InferenceMode.REASONING_EXTRACTION):
+            why = (
+                "think-block only"
+                if "<think" in raw_text.lower()
+                else "no usable content"
+            )
+            console.print(
+                f"[yellow]⚠ Gemma 4 returned empty after cleaning "
+                f"({why}). Retrying once with think=False + bigger budget…"
+                f"[/yellow]"
+            )
+            try:
+                retry_options = dict(options)
+                retry_options["num_predict"] = max(
+                    retry_options.get("num_predict", 512) * 2, 1024
+                )
+                # Nudge temperature up if it was very low — sub-0.3 sampling
+                # can lock onto an empty completion for certain inputs.
+                cur_t = retry_options.get("temperature", _cfg.GEMMA_TEMPERATURE)
+                if cur_t < 0.4:
+                    retry_options["temperature"] = 0.5
+                retry_kwargs: dict[str, Any] = {
+                    "model": model,
+                    "prompt": prompt,
+                    "options": retry_options,
+                    "keep_alive": _cfg.GEMMA_KEEP_ALIVE,
+                }
+                try:
+                    response2 = client.generate(think=False, **retry_kwargs)
+                except TypeError:
+                    response2 = client.generate(**retry_kwargs)
+                raw2 = (
+                    response2.response
+                    if hasattr(response2, "response")
+                    else response2["response"]
+                ) or ""
+                cleaned2 = _clean_response(raw2)
+                console.print(
+                    f"[dim]Gemma {model} retry raw={len(raw2)}ch "
+                    f"clean={len(cleaned2)}ch "
+                    f"first120={raw2[:120].replace(chr(10), ' ')!r}[/dim]"
+                )
+                if cleaned2:
+                    return cleaned2
+                # Last resort: surface the retry's raw text if non-empty.
+                if raw2.strip():
+                    console.print(
+                        "[yellow]⚠ Retry cleaning emptied a non-empty "
+                        "response. Returning raw retry text.[/yellow]"
+                    )
+                    return raw2.strip()
+            except Exception as exc:  # noqa: BLE001 — best-effort recovery
+                console.print(
+                    f"[yellow]⚠ Empty-response retry failed: {exc}[/yellow]"
+                )
+
+        if not cleaned and raw_text.strip():
+            # Final safety net: never silently return "".  If the first
+            # pass had ANY raw output, hand it back rather than the empty
+            # string that the UI would render as "—".
+            console.print(
+                f"[yellow]⚠ Cleaning emptied a non-empty Gemma response. "
+                f"Returning raw. First 200 chars: {raw_text[:200]!r}[/yellow]"
+            )
+            return raw_text.strip()
+
+        return cleaned
 
     # ------------------------------------------------------------------
     # Phase 2: Translation helpers
@@ -565,12 +686,19 @@ class GemmaEngine:
                 continue
 
             any_new = True
-            client = (
-                self._reasoning_client
-                if mode == InferenceMode.REASONING_EXTRACTION
-                else self._client
-            )
+            # Warmup ALWAYS uses the long-timeout client.  The fast-translation
+            # client (180-600 s depending on settings) is sized for steady-state
+            # requests once the model is already resident; the very first
+            # call after a fresh `ollama serve` can take several minutes to
+            # load weights into (V)RAM on a CPU laptop and we don't want that
+            # cold-load wall to fail warmup, which then forces every user
+            # request to pay the same wall.
+            client = self._reasoning_client
             try:
+                console.print(
+                    f"[dim]  Warming up {model} (this can take a few minutes "
+                    f"on first run — Ollama is loading weights)…[/dim]"
+                )
                 client.generate(
                     model=model,
                     prompt="ok",

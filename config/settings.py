@@ -12,6 +12,29 @@ import tempfile
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
+# ASR backend selection
+# ---------------------------------------------------------------------------
+# Two ASR backends are wired in.  The default is Whisper because it ships
+# with auto language detection and small footprint; IndicConformer is an
+# opt-in alternative that's noticeably better on Indian languages.
+#
+#   "whisper"          — faster-whisper / CTranslate2.  Fast, light, auto-detect
+#                        but hallucinates on noisy clips and occasionally
+#                        emits Latin-romanised or Urdu-script output that
+#                        the script normaliser has to repair.
+#
+#   "indic_conformer"  — AI4Bharat IndicConformer-600M.  Native-script
+#                        output on the first pass for hi/te/kn/ta; ~600 MB
+#                        model, ~2-3x slower per request on CPU.  Cannot
+#                        auto-detect; pair with explicit language or with
+#                        a cheap Whisper detect-only pre-pass.
+#
+# The web UI exposes a per-request override (Bridge tab dropdown), so this
+# default only controls cases where the request does not specify a backend.
+ASR_BACKEND_DEFAULT: str = "whisper"
+ASR_BACKENDS_AVAILABLE: tuple[str, ...] = ("whisper", "indic_conformer")
+
+# ---------------------------------------------------------------------------
 # Whisper ASR model
 # ---------------------------------------------------------------------------
 # "small" (244 M params, ~1 GB RAM) is the minimum for reliable Indic accuracy.
@@ -19,6 +42,17 @@ from pathlib import Path
 #   • Upgrade to "medium" if Telugu / Kannada accuracy is poor in Phase 1 eval.
 # WHISPER_MODEL_SIZE: str = "small"
 WHISPER_MODEL_SIZE: str = "base"
+
+# ---------------------------------------------------------------------------
+# AI4Bharat IndicConformer-600M (optional ASR)
+# ---------------------------------------------------------------------------
+# HuggingFace model id — kept in a constant so it can be overridden in tests
+# without monkey-patching the handler module.
+INDIC_CONFORMER_MODEL_ID: str = "ai4bharat/indic-conformer-600m-multilingual"
+# Decoder choice exposed by the model: "rnnt" (more accurate, slightly slower)
+# or "ctc" (faster, marginally less accurate).  RNNT is the sensible default
+# for a clinical-translation use case where accuracy beats latency.
+INDIC_CONFORMER_DECODER: str = "rnnt"
 
 # ---------------------------------------------------------------------------
 # Audio capture
@@ -59,8 +93,18 @@ MODEL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 # Ollama (Phase 2+) — local inference, nothing leaves the device
 # ---------------------------------------------------------------------------
 OLLAMA_HOST: str = "http://localhost:11434"
-OLLAMA_TIMEOUT: int = 180            # seconds -- fast translation (gemma4:e2b)
-OLLAMA_TIMEOUT_REASONING: int = 900  # seconds -- triage/OCR (vision is slow on CPU)
+# Per-request HTTP timeout for the small/fast translation model.  This has to
+# accommodate the *first* call after Ollama is restarted, when the model is
+# being loaded into (V)RAM from disk and the request blocks until the runner
+# is ready.  On a typical Windows laptop CPU loading gemma4:e2b takes 2-6
+# minutes when nothing is cached; once it's resident keep_alive keeps it
+# warm and subsequent calls return in seconds.  600 s gives comfortable
+# headroom for that cold-load case.  Raise further on slower hardware
+# (Pi 5, low-RAM systems).
+OLLAMA_TIMEOUT: int = 600
+# Triage / OCR get an even longer ceiling because they run the bigger e4b
+# model and the prompts are heavier (think=True, vision).
+OLLAMA_TIMEOUT_REASONING: int = 900
 
 # Web server (Phase 6 UI)
 WEB_HOST: str = "127.0.0.1"

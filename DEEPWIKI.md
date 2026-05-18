@@ -59,6 +59,16 @@ PatientDoctorBridge is a privacy-first, fully local voice translation system for
 │  │              │  │ faster-      │  │ Renormalization      │ │
 │  │              │  │ whisper      │  │                      │ │
 │  └──────────────┘  └──────────────┘  └──────────────────────┘ │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────┐ │
+│  │ IndicConfor- │  │ Script       │  │ Preprocessor         │ │
+│  │ merHandler   │  │ Normalizer   │  │ (SNR / silence /     │ │
+│  │ (optional)   │  │ (Devanagari/ │  │  light noise gate)   │ │
+│  │ AI4Bharat    │  │  Urdu/Latin) │  │                      │ │
+│  └──────────────┘  └──────────────┘  └──────────────────────┘ │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │ TTSService (audio/tts.py) — Facebook MMS-TTS             │  │
+│  │ Patient-language read-aloud for translations & phrases   │  │
+│  └──────────────────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────────┘
                               │
 ┌─────────────────────────────────────────────────────────────────┐
@@ -102,16 +112,32 @@ MODELS: dict[InferenceMode, str] = {
   - Patient → Doctor translation
   - Doctor → Patient translation
   - Emergency reassurance translation
-  - Context window: 1024 tokens (GEMMA_NUM_CTX_FAST)
-  - Output cap: 256 tokens (GEMMA_NUM_PREDICT_FAST)
-  - Timeout: 120s (OLLAMA_TIMEOUT)
+  - Prescription summary translation (patient-facing)
+  - Context window: 2048 tokens (`GEMMA_NUM_CTX_FAST`)
+  - Output cap: 512 tokens (`GEMMA_NUM_PREDICT_FAST`)
+  - Timeout: 600s (`OLLAMA_TIMEOUT`) — sized to cover the first cold-load on a laptop CPU; subsequent calls are sub-second thanks to `keep_alive="30m"`
 
 - **gemma4:e4b** (~4B params): Used for reasoning and vision tasks
   - Emergency triage extraction (with `think=True`)
   - Prescription OCR (multimodal vision)
-  - Context window: 4096 tokens (GEMMA_NUM_CTX)
-  - Output cap: 1024 tokens (GEMMA_NUM_PREDICT_REASONING)
-  - Timeout: 600s (OLLAMA_TIMEOUT_REASONING)
+  - Context window: 8192 tokens (`GEMMA_NUM_CTX`)
+  - Output cap: 4096 tokens (`GEMMA_NUM_PREDICT_REASONING`)
+  - Timeout: 900s (`OLLAMA_TIMEOUT_REASONING`) — also used for warmup so the very first model load doesn't fail under the shorter fast-translation timeout
+
+#### Empty-Response Recovery
+
+`GemmaEngine.generate()` includes a one-shot retry path for two failure modes that produced silent empty UI boxes in production:
+
+1. **Think-block only.** `gemma4:e2b` occasionally emits only a `<think>...</think>` reasoning trace (often truncated by `num_predict`). After `_strip_think_tags()` runs, nothing is left.
+2. **Whitespace-only output.** Low temperatures (≤0.3) plus certain Indic→English prompts can lock the sampler into producing nothing.
+
+When either is detected (`cleaned == ""` after `_clean_response`), the engine retries once with `think=False` explicitly, `num_predict` doubled, and temperature nudged up to 0.5. Every call also prints a one-line trace at `dim` level:
+
+```
+Gemma gemma4:e2b raw=412ch clean=398ch first120='Sir, the patient reports…'
+```
+
+This trace appears for both the initial call and the retry, making the failure mode immediately visible in the server log.
 
 #### Dual Client Pattern
 
@@ -351,6 +377,56 @@ def transcribe_locked(self, audio_path: Path | str, language: str) -> Transcript
 ```
 
 This saves ~1-2 seconds per doctor turn on CPU.
+
+### Whisper Hallucination Guard (`audio/handler.py::_is_repeat_hallucination`)
+
+The default Whisper `base` model occasionally locks onto a repeating 1-4 token window on noisy / silent clips, producing transcripts like:
+
+```
+هاں பي ال هاں பي ال هاں பي ال هاں பي ال هاں பي ال …
+```
+
+Both `transcribe()` and `transcribe_locked()` apply the same check after Whisper returns and before script normalisation:
+
+```python
+if _is_repeat_hallucination(text):
+    text = "[no speech detected]"
+```
+
+The detector tokenises on whitespace and, for window sizes 1-4, declares a hallucination if a single fixed window recurs ≥4 times and covers ≥80% of all tokens. Transcripts shorter than 12 tokens are exempt (genuine short utterances would false-positive). The sentinel `[no speech detected]` is treated by the server as an early-exit — Gemma 4 is never called on it, and the UI receives a structured warning explaining what to do.
+
+### IndicConformer Handler (`audio/indic_conformer.py`) — optional ASR
+
+`IndicConformerHandler` wraps the AI4Bharat `ai4bharat/indic-conformer-600m-multilingual` checkpoint with the same `TranscriptResult` shape as `AudioHandler`, so the rest of the pipeline doesn't care which backend produced the text.
+
+#### Why offer a second backend
+
+Whisper was trained on a heavily English-skewed multilingual corpus and produces several recurring failure modes on Indian languages: romanised-Latin or Urdu-script output for Hindi, dialect confusion among Telugu / Kannada / Tamil, and the repeat-token hallucinations described above. IndicConformer was trained specifically on Indian languages with high-quality crowd-sourced corpora; it produces native-script output (Devanagari / Telugu / Kannada / Tamil) on the first pass without any script-recovery patches.
+
+The trade-offs are weight (~600 MB on disk vs ~140 MB for Whisper-base), latency (~2-3× slower per request on CPU), and the lack of a built-in language detector — IndicConformer must be told which language to transcribe.
+
+#### Loading
+
+The HuggingFace checkpoint is fetched once via `AutoModel.from_pretrained(..., trust_remote_code=True)` and cached at `~/.cache/pdb/models/indic-conformer/`. The model is held as a class-level singleton so every request shares the same loaded instance.
+
+#### Decoder choice
+
+`INDIC_CONFORMER_DECODER` (default `"rnnt"`) selects between the checkpoint's two decoders. `"rnnt"` is more accurate and slightly slower; `"ctc"` is faster. RNNT is the right default for a clinical-translation use case where accuracy beats latency.
+
+### `_dispatch_asr()` — single source of truth for routing
+
+`web/server.py::_dispatch_asr(tmp_path, locked_lang, asr_backend)` is called by both the Bridge patient endpoint and the Triage SSE endpoint, so they never disagree on which backend ran or how auto-detect was handled. Four cases:
+
+| `asr_backend` | `locked_lang` | Behaviour |
+|---------------|----------------|-----------|
+| `whisper` | one of `hi/te/kn/ta/en` | `AudioHandler.transcribe_locked(tmp_path, locked_lang)` |
+| `whisper` | empty / `auto`         | `AudioHandler.transcribe(tmp_path)` (constrained auto-detect) |
+| `indic_conformer` | one of `hi/te/kn/ta/en` | `IndicConformerHandler.transcribe(tmp_path, locked_lang)` |
+| `indic_conformer` | empty / `auto`         | Hybrid: Whisper on a copy of the file for cheap detection → IndicConformer on the original tmp file for transcription |
+
+#### Why the hybrid uses `shutil.copyfile` not `_save_temp_audio` twice
+
+Flask's `FileStorage` is a one-shot stream backed by the request body. After the first `.save(tmp_path)` drains it, calling `.save()` again writes 0 bytes — ffmpeg then raises `Invalid data found when processing input`. The dispatch copies the already-saved on-disk file to `tmp_path + ".detect"` for Whisper to consume; Whisper deletes its copy in its `finally` block as always, and IndicConformer consumes the original.
 
 ### Language Identification (`audio/language_id.py`)
 

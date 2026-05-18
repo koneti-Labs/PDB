@@ -33,9 +33,12 @@ import os
 from pathlib import Path
 from typing import TypedDict
 
+import numpy as np
 from rich.console import Console
 
 from audio.language_id import constrain_and_renormalize
+from audio.preprocessor import AudioPreprocessor
+from audio.script_normalizer import ScriptNormalizer
 from config.settings import (
     MODEL_CACHE_DIR,
     WHISPER_BEAM_SIZE,
@@ -51,6 +54,52 @@ class TranscriptResult(TypedDict):
     language: str      # ISO 639-1 code, always one of {hi, te, kn, en, ta}
     confidence: float  # renormalized, 0-1
     text: str          # raw transcript text
+
+
+def _is_repeat_hallucination(text: str) -> bool:
+    """
+    Detect Whisper's repeat-token hallucination pattern.
+
+    On near-silent, noisy, or background-music-only clips, Whisper (especially
+    the smaller "base" model used by default) sometimes emits the same short
+    fragment over and over — e.g.::
+
+        "هاں பي ال هاں பي ال هاں பي ال هاں பي ال هاں பي ال …"
+
+    Forwarding such gibberish to Gemma 4 wastes ~10–30 s of inference and
+    returns nothing useful; the user just sees "—" in the UI.  We flag it
+    early and treat the clip as no-speech instead.
+
+    Heuristic
+    ---------
+    For each window size 1..4, take the first window of N tokens, count how
+    often that exact window recurs at multiples of N positions, and declare a
+    hallucination if it dominates the transcript (>= 4 repetitions AND >= 80%
+    of all tokens).
+
+    Returns
+    -------
+    True if the text looks like a repeat-token hallucination, False otherwise.
+    """
+    if not text:
+        return False
+    tokens = text.split()
+    n = len(tokens)
+    if n < 12:
+        # Too short to call confidently — short messages are often genuine.
+        return False
+    for w in (1, 2, 3, 4):
+        if n < w * 4:
+            continue
+        window = tuple(tokens[:w])
+        # Slide non-overlapping windows of size w across the transcript.
+        repeats = 0
+        for i in range(0, n - w + 1, w):
+            if tuple(tokens[i:i + w]) == window:
+                repeats += 1
+        if repeats >= 4 and repeats * w >= n * 0.8:
+            return True
+    return False
 
 
 class AudioHandler:
@@ -73,7 +122,8 @@ class AudioHandler:
     def __init__(self) -> None:
         # Instance attr is unused now; kept for backwards compat with any
         # callers that may have set it directly.
-        pass
+        self.preprocessor = AudioPreprocessor()
+        self.script_normalizer = ScriptNormalizer()
 
     # ------------------------------------------------------------------
     # Public API
@@ -110,11 +160,29 @@ class AudioHandler:
             raise FileNotFoundError(f"Audio file not found: {audio_path}")
 
         try:
+            # Load and preprocess audio for better quality
+            audio_data = self._load_audio_for_preprocessing(audio_path)
+            
+            # Analyze audio quality
+            quality_metrics = self.preprocessor.analyze_and_log(
+                audio_data, sample_rate=16000, label="patient"
+            )
+            
+            # Preprocess audio if quality is poor
+            if not quality_metrics["is_acceptable"]:
+                console.print("[yellow]Applying audio preprocessing to improve quality...[/yellow]")
+                preprocessed_audio = self.preprocessor.preprocess(audio_data, sample_rate=16000)
+                # Save preprocessed audio back to temp file
+                temp_preprocessed = self._save_preprocessed_audio(preprocessed_audio, audio_path)
+                transcribe_path = temp_preprocessed
+            else:
+                transcribe_path = audio_path
+            
             # One-pass: transcribe with language=None so Whisper auto-detects.
             # TranscriptionInfo.all_language_probs gives the full distribution --
             # we apply our 5-language constraint without a separate encode pass.
             _raw = self._model.transcribe(
-                str(audio_path),
+                str(transcribe_path),
                 language=None,
                 beam_size=WHISPER_BEAM_SIZE,
                 vad_filter=WHISPER_VAD_FILTER,
@@ -144,7 +212,7 @@ class AudioHandler:
                 # Constrained language differs (e.g. Whisper said "ur", we want "hi").
                 # Re-transcribe locked to the correct language (rare, ~5% of cases).
                 _raw2 = self._model.transcribe(
-                    str(audio_path),
+                    str(transcribe_path),
                     language=language,
                     beam_size=WHISPER_BEAM_SIZE,
                     vad_filter=WHISPER_VAD_FILTER,
@@ -154,6 +222,40 @@ class AudioHandler:
                 )
                 segs2 = _raw2[0] if isinstance(_raw2, tuple) else _raw2
                 text = " ".join(seg.text for seg in segs2).strip()
+            
+            # Check if we need to re-transcribe due to script mismatch
+            # (e.g., Hindi detected but transcribed in Urdu script or romanized)
+            if self.script_normalizer.should_retranscribe(text, language, confidence):
+                script_type = self.script_normalizer.detect_script(text)
+                console.print(
+                    f"[yellow]Detected {script_type} script for {language} - "
+                    f"re-transcribing with language locked to '{language}'...[/yellow]"
+                )
+                _raw3 = self._model.transcribe(
+                    str(transcribe_path),
+                    language=language,
+                    beam_size=WHISPER_BEAM_SIZE,
+                    vad_filter=WHISPER_VAD_FILTER,
+                    vad_parameters={"min_silence_duration_ms": 500},
+                    temperature=0.0,
+                    condition_on_previous_text=WHISPER_CONDITION_ON_PREVIOUS,
+                )
+                segs3 = _raw3[0] if isinstance(_raw3, tuple) else _raw3
+                text = " ".join(seg.text for seg in segs3).strip()
+            
+            # Normalize script for Hindi (convert Urdu script to Devanagari if needed)
+            text = self.script_normalizer.normalize_hindi_script(text, language)
+
+            # Defence against Whisper repeat-token hallucination on near-silent
+            # or noisy clips.  Symptoms in production logs: "هاں பي ال هاں
+            # பي ال هاں பي ال …" repeating endlessly.  If we forward that to
+            # Gemma 4 it returns empty output and the user sees "—".
+            if _is_repeat_hallucination(text):
+                console.print(
+                    f"[yellow]⚠ Whisper hallucination detected for '{language}' "
+                    f"(repeat-token loop) — treating as no-speech.[/yellow]"
+                )
+                text = "[no speech detected]"
 
             if not text:
                 text = "[no speech detected]"
@@ -161,6 +263,12 @@ class AudioHandler:
         finally:
             # Privacy contract -- runs unconditionally
             os.unlink(audio_path)
+            # Also delete preprocessed temp file if it was created
+            if 'temp_preprocessed' in locals() and temp_preprocessed != audio_path:
+                try:
+                    os.unlink(temp_preprocessed)
+                except Exception:
+                    pass
 
         return TranscriptResult(language=language, confidence=confidence, text=text)
 
@@ -168,9 +276,18 @@ class AudioHandler:
         """
         Transcribe *audio_path* with language detection skipped.
 
-        Used for the doctor turn where the language is already known to be
-        English ("en").  Skips language detection, runs Whisper directly
-        in the specified language.
+        Used for:
+          • The doctor turn (language always English).
+          • The patient turn whenever the user has explicitly chosen a
+            language in the UI (Bridge tab dropdown).
+          • The Triage tab when the user selects a specific language.
+
+        Locking Whisper to the target language is the most reliable way to
+        get native-script output (Devanagari for Hindi, etc.).  We also run
+        the script normaliser at the end as a defence-in-depth step: even
+        with the language locked Whisper occasionally emits Arabic/Urdu
+        glyphs for Hindi, and the normaliser transliterates those back to
+        Devanagari.
 
         The audio file is still deleted unconditionally in the finally block.
         Accepts str or Path (web server passes str via tempfile.mkstemp).
@@ -195,6 +312,21 @@ class AudioHandler:
             segments = _raw[0] if isinstance(_raw, tuple) else _raw
             info     = _raw[1] if isinstance(_raw, tuple) and len(_raw) > 1 else None
             text = " ".join(seg.text for seg in segments).strip()
+
+            # Defence-in-depth: even with the language locked the model can
+            # still emit Arabic-script Hindi.  Transliterate to Devanagari
+            # so downstream prompts see the patient's words in the expected
+            # script.  This is a no-op for languages other than Hindi.
+            text = self.script_normalizer.normalize_hindi_script(text, language)
+
+            # Same repeat-token hallucination guard as transcribe().
+            if _is_repeat_hallucination(text):
+                console.print(
+                    f"[yellow]⚠ Whisper hallucination detected for '{language}' "
+                    f"(locked) — treating as no-speech.[/yellow]"
+                )
+                text = "[no speech detected]"
+
             if not text:
                 text = "[no speech detected]"
             confidence = float(getattr(info, "language_probability", 1.0))
@@ -242,6 +374,52 @@ class AudioHandler:
             f"({'GPU ⚡' if HARDWARE.has_gpu else 'CPU'}).[/green]"
         )
 
+    def _load_audio_for_preprocessing(self, audio_path: Path) -> np.ndarray:
+        """
+        Load audio file for preprocessing analysis.
+        
+        Returns audio as numpy array (int16 or float32).
+        """
+        try:
+            from faster_whisper.audio import decode_audio
+        except ImportError:
+            from faster_whisper import decode_audio  # type: ignore[no-redef]
+        
+        audio = decode_audio(str(audio_path), sampling_rate=16_000)
+        return audio
+    
+    def _save_preprocessed_audio(self, audio: np.ndarray, original_path: Path) -> Path:
+        """
+        Save preprocessed audio to a temporary file.
+        
+        Parameters
+        ----------
+        audio:
+            Preprocessed audio as float32 numpy array
+        original_path:
+            Original audio file path (for naming)
+        
+        Returns
+        -------
+        Path to the temporary preprocessed audio file
+        """
+        import tempfile
+        from scipy.io.wavfile import write as wav_write
+        
+        # Convert float32 to int16 for WAV
+        audio_int16 = (audio * 32767).astype(np.int16)
+        
+        # Create temp file
+        tmp = tempfile.NamedTemporaryFile(
+            suffix="_preprocessed.wav",
+            dir=original_path.parent,
+            delete=False,
+        )
+        wav_write(tmp.name, 16000, audio_int16)
+        tmp.close()
+        
+        return Path(tmp.name)
+    
     def _detect_language_probs(self, audio_path: Path) -> dict[str, float]:
         """
         Return Whisper's full language probability distribution as a dict.

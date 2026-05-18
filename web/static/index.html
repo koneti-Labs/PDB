@@ -283,13 +283,27 @@
     <div class="lang-row">
       <label>Patient language:</label>
       <select id="bridge-lang">
+        <option value="auto" selected>Auto-detect</option>
         <option value="hi">Hindi</option>
         <option value="te">Telugu</option>
         <option value="kn">Kannada</option>
         <option value="ta">Tamil</option>
         <option value="en">English</option>
       </select>
+      <span style="font-size:0.75rem;color:#64748b;">
+        Pick a specific language only if Auto-detect picks the wrong one.
+      </span>
       <span class="detected-badge" id="detected-lang-badge"></span>
+    </div>
+    <div class="lang-row">
+      <label>Speech model:</label>
+      <select id="bridge-asr">
+        <option value="whisper" selected>Whisper (fast, default)</option>
+        <option value="indic_conformer">IndicConformer-600M (AI4Bharat — better Indian languages)</option>
+      </select>
+      <span style="font-size:0.75rem;color:#64748b;">
+        First IndicConformer call downloads ~600 MB; subsequent calls are fast.
+      </span>
     </div>
     <div class="record-row">
       <button class="btn btn-primary" id="btn-rec-patient" onclick="startRecord('patient')">
@@ -345,7 +359,8 @@
     <div class="result-group">
       <div class="result-label">
         Translation for Patient
-        <button class="btn-speak" id="speak-doctor-trans" onclick="speakEl('doctor-translation', currentPatientLang)">🔊 Speak</button>
+        <button class="btn-speak" id="speak-doctor-trans"
+                onclick="speakEl('doctor-translation', _doctorTargetLang)">🔊 Speak</button>
         <span id="speaking-badge" style="display:none;font-size:0.78rem;color:#4ade80;">
           <span class="speaking-dot"></span>Reading aloud…
         </span>
@@ -373,6 +388,16 @@
         <option value="ta">Tamil</option>
         <option value="en">English</option>
       </select>
+    </div>
+    <div class="lang-row" style="margin-bottom:14px;">
+      <label>Speech model:</label>
+      <select id="triage-asr">
+        <option value="whisper" selected>Whisper (fast, default)</option>
+        <option value="indic_conformer">IndicConformer-600M (AI4Bharat — better Indian languages)</option>
+      </select>
+      <span style="font-size:0.75rem;color:#64748b;">
+        Same options as the Bridge tab.
+      </span>
     </div>
     <div class="record-row">
       <button class="btn btn-danger" id="btn-rec-triage" onclick="startRecord('triage')">
@@ -493,11 +518,29 @@
 
 <script>
 // ─── Global state ────────────────────────────────────────────────────────────
-let currentPatientLang = 'hi';   // ISO code of the patient's detected language
+let currentPatientLang  = 'hi';   // ISO code of the patient's detected language
+let _doctorTargetLang   = 'hi';   // lang last used for a Doctor→Patient translation;
+                                  // the 🔊 button on that card always replays in this lang,
+                                  // never in whatever currentPatientLang happens to be.
 
 // BCP-47 locale tags for Web Speech API
 const LANG_BCP47 = { hi:'hi-IN', te:'te-IN', kn:'kn-IN', ta:'ta-IN', en:'en-US' };
 const LANG_NAMES  = { hi:'Hindi', te:'Telugu', kn:'Kannada', ta:'Tamil', en:'English' };
+
+// ─── Small UI helpers (these were referenced by translatePhrase() but never
+//     defined — the resulting ReferenceError was silently breaking the
+//     Reassure tab and was a contributor to the "no translation happening"
+//     symptom).
+// ───────────────────────────────────────────────────────────────────────────
+function spinner(label) {
+  return `<span class="spinner"></span>${label ? esc(label) : ''}`;
+}
+
+function setSpeakBtn(id, visible) {
+  const btn = document.getElementById(id);
+  if (!btn) return;
+  btn.classList.toggle('visible', !!visible);
+}
 
 // ─── Tab switching ──────────────────────────────────────────────────────────
 function switchTab(name, btn) {
@@ -632,18 +675,26 @@ async function translatePhrase() {
     }
 
     const data = await res.json();
-    transEl.textContent = data.translated || '(no translation)';
+    const translated = data.translated || '';
+    transEl.textContent = translated || '(no translation)';
 
     // Store the language used for THIS successful translation so the TTS
     // button speaks in the right language even if the selector has changed.
     _reassureLang = lang;
-    setSpeakBtn('speak-reassure', true);
+    setSpeakBtn('speak-reassure', !!translated);
+
+    // Auto-play the translation so emergency reassurance is heard immediately.
+    // English translations are returned as the original phrase by the service;
+    // we still speak them so the user gets audible confirmation.
+    if (translated) {
+      await speakText(translated, lang);
+    }
   } catch (err) {
     if (err.name === 'AbortError') {
       // Silently discard — a newer request superseded this one.
       return;
     }
-    transEl.innerHTML = `<span class="text-danger">Network error: ${err.message}</span>`;
+    transEl.innerHTML = `<span class="text-danger">Network error: ${esc(err.message)}</span>`;
   }
 }
 
@@ -795,6 +846,12 @@ async function uploadAudio(role, chunks) {
     if (triageLang && triageLang !== 'auto') {
       form.append('language', triageLang);
     }
+    // Mirror the Bridge tab: let the user opt into IndicConformer for the
+    // triage recording too.  Sending the field always (instead of only when
+    // non-default) keeps the server log honest about which backend was
+    // requested per turn.
+    const triageAsr = document.getElementById('triage-asr');
+    if (triageAsr) form.append('asr_backend', triageAsr.value);
 
     const card    = document.getElementById('triage-result-card');
     const alertEl = document.getElementById('triage-alert');
@@ -863,6 +920,16 @@ async function uploadAudio(role, chunks) {
     : document.getElementById('doctor-lang').value;
   form.append('language', lang);
 
+  // ASR backend choice is patient-side only — the doctor turn is always
+  // English, where Whisper already excels and IndicConformer offers no
+  // advantage.  Sending the field for the doctor turn is harmless because
+  // the server unconditionally uses Whisper there, but keeping it scoped
+  // makes the network request honest about intent.
+  if (role === 'patient') {
+    const asrSel = document.getElementById('bridge-asr');
+    if (asrSel) form.append('asr_backend', asrSel.value);
+  }
+
   const endpoint = role === 'patient' ? '/api/bridge/patient' : '/api/bridge/doctor';
   setStatus(role === 'patient' ? 'Transcribing patient…' : 'Transcribing doctor…', '');
 
@@ -879,14 +946,62 @@ async function uploadAudio(role, chunks) {
       document.getElementById('patient-transcript').textContent  = data.transcript;
       document.getElementById('patient-translation').textContent = data.translation;
       // Sync doctor-lang dropdown so the reply goes back in the right language
-      currentPatientLang = data.detected_language;
+      currentPatientLang  = data.detected_language;
+      _doctorTargetLang   = data.detected_language;
       const dl = document.getElementById('doctor-lang');
       if (dl && data.detected_language) dl.value = data.detected_language;
-      setStatus('Patient transcribed and translated.', 'ok');
+
+      // If the user left the bridge dropdown on "Auto-detect", surface the
+      // detected language as a badge so the choice is visible.
+      const badge = document.getElementById('detected-lang-badge');
+      if (badge) {
+        if (document.getElementById('bridge-lang').value === 'auto') {
+          badge.textContent = `Detected: ${langName}`;
+          badge.style.display = 'inline-block';
+        } else {
+          badge.style.display = 'none';
+        }
+      }
+
+      // Reveal the 🔊 button (it has display:none until ".visible" is added).
+      setSpeakBtn('speak-patient-trans', !!data.translation);
+      // A backend warning takes precedence over the cheery "all done" status:
+      // if there's no translation, leaving "Patient transcribed and translated."
+      // on the bar is misleading.
+      if (data.warning) {
+        setStatus(data.warning, 'warn');
+      } else {
+        setStatus('Patient transcribed and translated.', 'ok');
+      }
     } else {
+      // Capture the language used for THIS translation so the 🔊 button
+      // plays the right voice even if the dropdown is changed afterwards.
+      const targetLang = data.target_language ||
+                         document.getElementById('doctor-lang').value || 'hi';
+      _doctorTargetLang = targetLang;
+
       document.getElementById('doctor-transcript').textContent  = data.transcript;
-      document.getElementById('doctor-translation').textContent = data.translation;
-      setStatus('Doctor transcribed and translated.', 'ok');
+      document.getElementById('doctor-translation').textContent = data.translation || '';
+
+      if (data.translation) {
+        setSpeakBtn('speak-doctor-trans', true);
+        setStatus('Doctor transcribed and translated. Reading aloud…', 'ok');
+        // Auto-play TTS in the patient's language so the patient hears the
+        // doctor's reply immediately without needing to click 🔊.
+        await speakText(data.translation, targetLang, 'speaking-badge');
+        if (data.warning) {
+          setStatus(data.warning, 'warn');
+        } else {
+          setStatus('Doctor transcribed and translated.', 'ok');
+        }
+      } else {
+        setSpeakBtn('speak-doctor-trans', false);
+        // Prefer the server's specific warning over a generic "empty".
+        setStatus(
+          data.warning || 'Doctor transcribed but translation was empty.',
+          'err'
+        );
+      }
     }
   } catch (err) {
     setStatus('Network error: ' + err.message, 'err');
@@ -945,22 +1060,72 @@ async function speakEl(elId, lang) {
   await speakText(text, lang);
 }
 
-async function speakText(text, lang) {
-  if (!text) return;
+// Cache: once /api/tts returns 503 missing_dependency, stop hammering it
+// every translation — show the install hint once and silently skip.
+let _ttsDisabledReason = null;
+
+// Synthesise *text* via /api/tts in the given language and play it in the
+// browser.  Awaits playback so callers can chain status updates ("Reading
+// aloud…" → "Done") around the call.  Optionally toggles a "speaking" badge
+// element by id while audio is playing.
+async function speakText(text, lang, badgeId) {
+  if (!text || !lang) return;
+  if (_ttsDisabledReason) {
+    // TTS subsystem already declared itself unavailable in this session.
+    // Show a one-line status hint and bail out — don't issue another request.
+    setStatus(_ttsDisabledReason, 'warn');
+    return;
+  }
+  const badge = badgeId ? document.getElementById(badgeId) : null;
   try {
     const res = await fetch('/api/tts', {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify({ text, language: lang }),
     });
-    if (!res.ok) { console.error('TTS error:', res.statusText); return; }
+    if (!res.ok) {
+      let detail = res.statusText;
+      let payload = null;
+      try { payload = await res.json(); } catch (_) {}
+      if (payload && payload.error) detail = payload.error;
+      // 503 + missing_dependency means the server is up but PyTorch (or
+      // similar) is not installed.  Latch the reason so we don't keep
+      // retrying on every translation.
+      if (res.status === 503 && payload && payload.missing_dependency) {
+        _ttsDisabledReason = detail;
+        setStatus(detail, 'warn');
+      } else {
+        console.error('TTS error:', detail);
+      }
+      return;
+    }
     const blob = await res.blob();
     const url  = URL.createObjectURL(blob);
     const audio = new Audio(url);
-    audio.onended = () => URL.revokeObjectURL(url);
-    audio.play();
+    if (badge) badge.style.display = 'inline';
+    await new Promise((resolve) => {
+      audio.onended = () => {
+        URL.revokeObjectURL(url);
+        if (badge) badge.style.display = 'none';
+        resolve();
+      };
+      audio.onerror = () => {
+        URL.revokeObjectURL(url);
+        if (badge) badge.style.display = 'none';
+        resolve();
+      };
+      audio.play().catch((err) => {
+        // Browsers block autoplay until the user interacts with the page —
+        // in that case we leave the 🔊 button visible so the user can play
+        // it manually with one click.
+        console.warn('Autoplay blocked or audio failed:', err);
+        if (badge) badge.style.display = 'none';
+        resolve();
+      });
+    });
   } catch (err) {
     console.error('TTS failed:', err);
+    if (badge) badge.style.display = 'none';
   }
 }
 </script>

@@ -29,16 +29,25 @@ A patient speaks in Hindi, Telugu, Kannada, or Tamil. The doctor hears clean Eng
 
 ## Overview
 
-| Phase | Feature | CLI command | Model |
-|-------|---------|-------------|-------|
-| 1 | Voice capture + language detection | `pdb listen` | Whisper (local) |
-| 2 | Two-way patient ↔ doctor translation | `pdb bridge` | `gemma4:e2b` |
-| 3 | Emergency triage extraction | `pdb triage` | `gemma4:e4b` |
-| 4 | Prescription OCR (multimodal vision) | `pdb prescription --image rx.jpg` | `gemma4:e4b` |
-| 5 | Emergency reassurance phrases | `pdb reassure` | `gemma4:e2b` |
-| 6 | Single-page web UI | `pdb server` | both |
+| Phase | Feature | CLI command | LLM (Gemma 4) | ASR / TTS support models |
+|-------|---------|-------------|---------------|--------------------------|
+| 1 | Voice capture + language detection | `pdb listen` | — | Whisper or IndicConformer (optional) |
+| 2 | Two-way patient ↔ doctor translation | `pdb bridge` | `gemma4:e2b` | Whisper or IndicConformer; MMS-TTS for read-aloud |
+| 3 | Emergency triage extraction | `pdb triage` | `gemma4:e4b` | Whisper or IndicConformer |
+| 4 | Prescription OCR (multimodal vision) | `pdb prescription --image rx.jpg` | `gemma4:e4b` | — |
+| 5 | Emergency reassurance phrases | `pdb reassure` | `gemma4:e2b` | MMS-TTS for read-aloud |
+| 6 | Single-page web UI | `pdb server` | both | Per-request choice of ASR backend |
 
 **Supported languages:** Hindi (hi), Telugu (te), Kannada (kn), Tamil (ta), English (en)
+
+**ASR backends available** (selectable per request in the web UI):
+
+- **Whisper** (`faster-whisper`, default) — fast (~140 MB "base" model), built-in language detection, ships with the base install. The Bridge and Triage tabs default to this.
+- **IndicConformer-600M** (`ai4bharat/indic-conformer-600m-multilingual`, optional opt-in) — substantially better on Indian languages, produces native-script output (Devanagari / Telugu / Kannada / Tamil) on the first pass without script-normalisation patches. ~600 MB model, ~2-3× slower per request on CPU. Cannot auto-detect by itself; if the user leaves the language dropdown on **Auto-detect**, the server runs Whisper for cheap language detection and then re-transcribes with IndicConformer locked to the detected language (hybrid auto-detect).
+
+**TTS** uses Facebook MMS-TTS via the local Transformers VITS model — patient-language read-aloud for Doctor→Patient translations, reassurance phrases, and prescription summaries. No OS voice pack or cloud TTS API required.
+
+> **Competition note.** All *LLM* inference is Gemma 4 exclusively. Whisper, IndicConformer, and MMS-TTS are acoustic models (speech-to-text and text-to-speech), not LLMs, and they all run entirely locally — see the [Competition Constraints](#competition-constraints) section.
 
 ---
 
@@ -48,26 +57,42 @@ A patient speaks in Hindi, Telugu, Kannada, or Tamil. The doctor hears clean Eng
 Browser / CLI
      │
      ▼
-audio/recorder.py   ←  records via sounddevice (CTRL+C to stop)
+audio/recorder.py        ←  records via sounddevice or browser MediaRecorder
      │
-audio/handler.py    ←  Whisper ASR (one-pass transcription + language detection)
-     │               ←  audio file deleted immediately after transcription
+web/server.py            ←  _dispatch_asr() — single source of truth for ASR routing
+     │                      based on (asr_backend, locked_lang):
+     │                        (whisper,         locked) → AudioHandler.transcribe_locked
+     │                        (whisper,         auto)   → AudioHandler.transcribe   (constrained)
+     │                        (indic_conformer, locked) → IndicConformerHandler.transcribe
+     │                        (indic_conformer, auto)   → Whisper-detect → IndicConformer-transcribe
+     │
+audio/handler.py         ←  Whisper ASR (auto-detect + constrained renormalisation,
+     │                      Hindi-script normaliser, repeat-token hallucination guard)
+     │
+audio/indic_conformer.py ←  AI4Bharat IndicConformer-600M ASR (optional opt-in)
+     │
+audio/preprocessor.py    ←  SNR / silence analysis + light noise gate
+audio/script_normalizer.py ←  Devanagari ↔ Urdu-script + romanised-Latin recovery
+     │                      audio file unconditionally deleted in a finally block
      ▼
-config/languages.py ←  constrains + renormalises to 5 language codes
+config/languages.py      ←  constrains + renormalises to 5 language codes
      │
      ▼
-core/engine.py      ←  GemmaEngine — routes to two Ollama clients:
-     │                   FAST_TRANSLATION      → gemma4:e2b  (120 s timeout)
-     │                   REASONING_EXTRACTION  → gemma4:e4b  (300 s timeout)
+core/engine.py           ←  GemmaEngine — routes to two Ollama clients:
+     │                        FAST_TRANSLATION      → gemma4:e2b  (600 s timeout)
+     │                        REASONING_EXTRACTION  → gemma4:e4b  (900 s timeout)
+     │                      with empty-response retry + raw-output trace logging
      │
 translation/
-  service.py        ←  patient↔doctor text translation
-  triage.py         ←  JSON extraction + TriageResult TypedDict
-  prescription.py   ←  medicine list extraction from images
-  reassurance.py    ←  comfort phrase bank + translation
+  service.py             ←  patient↔doctor text translation
+  triage.py              ←  JSON extraction + TriageResult TypedDict
+  prescription.py        ←  medicine list extraction from images
+  reassurance.py         ←  comfort phrase bank + translation
      │
-cli/                ←  Rich terminal UI for each phase
-web/server.py       ←  Flask API + single-page HTML/JS UI
+audio/tts.py             ←  Facebook MMS-TTS — patient-language read-aloud
+     │
+cli/                     ←  Rich terminal UI for each phase
+web/server.py            ←  Flask API + single-page HTML/JS UI (Bridge / Triage / Rx / Reassure)
 ```
 
 ---
@@ -76,10 +101,11 @@ web/server.py       ←  Flask API + single-page HTML/JS UI
 
 | Requirement | Version | Notes |
 |-------------|---------|-------|
-| Python | **3.11 exactly** | TTS dependency (Coqui XTTS v2) requires 3.11 |
+| Python | **3.11 exactly** | Required so the optional TTS dependency (Coqui XTTS v2) compiles; the active MMS-TTS path works under newer Pythons but the project pins 3.11 for reproducibility |
 | [Ollama](https://ollama.com) | ≥ 0.4.7 | For local Gemma 4 inference |
 | PortAudio | system library | Required by sounddevice for mic access |
 | FFmpeg | any recent | Required by faster-whisper for audio decoding |
+| Disk space | ≥ 2 GB free | Whisper-base ~140 MB, Gemma 4 weights ~6 GB total, MMS-TTS ~80 MB per language, IndicConformer ~600 MB if you opt into it |
 
 ### Install system dependencies
 
@@ -110,12 +136,32 @@ cd patient-doctor-bridge
 python3.11 -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
 
-# 3. Install the package and all dependencies
+# 3. Install the base package + dev tools
 pip install -e ".[dev]"
 
-# 4. Verify the CLI is available
+# 4. (Optional) Opt into the AI4Bharat IndicConformer-600M ASR backend
+pip install -e ".[indic-asr]"
+
+# 5. Verify the CLI is available
 pdb --help
 ```
+
+### What the base install includes
+
+The base install (`pip install -e .`) brings in everything needed for the default pipeline:
+
+- `faster-whisper` for ASR
+- `ollama` Python client for Gemma 4 calls
+- `flask` for the web UI
+- `torch` + `transformers` for the **Facebook MMS-TTS** read-aloud feature — these are required for the 🔊 buttons in the Bridge / Reassure / Prescription tabs to work; without them the `/api/tts` endpoint returns a 503 with an install hint and the UI shows a one-time toast.
+
+### What the `[indic-asr]` extra adds
+
+`torchaudio>=2.2,<3` — needed only by the AI4Bharat IndicConformer-600M checkpoint's `trust_remote_code=True` loader. If you never pick the IndicConformer backend in the UI, you can skip this extra.
+
+### Windows note
+
+The MMS-TTS HuggingFace cache uses symlinks by default. On Windows that prints a one-time warning unless you either run Python as administrator or enable [Developer Mode](https://docs.microsoft.com/en-us/windows/apps/get-started/enable-your-device-for-development). It's a warning, not an error — files still cache, just with extra disk usage.
 
 ---
 
@@ -314,12 +360,30 @@ Then open **http://localhost:5000** in any modern browser.
 
 | Tab | What it does |
 |-----|-------------|
-| **Bridge** | Record patient → get doctor English; Record doctor → get patient translation |
+| **Bridge** | Record patient → get doctor English; Record doctor → get patient translation. Doctor-side translation is auto-spoken in the patient's language. |
 | **Triage** | Record patient → structured triage card |
-| **Prescription** | Upload prescription image → medicines table |
-| **Reassure** | Pick a comfort phrase → instant translation in patient language |
+| **Prescription** | Upload prescription image → medicines table + optional patient-language summary (with 🔊) |
+| **Reassure** | Pick a comfort phrase → instant translation in patient language, auto-spoken |
 
-> **Tip:** The status bar at the bottom of the UI shows Ollama connectivity. If it shows a warning, run `ollama serve` and refresh the page.
+### Per-request ASR controls (Bridge & Triage)
+
+Both audio tabs expose two dropdowns above the Record button:
+
+- **Patient language** — defaults to **Auto-detect**. Pick a specific language (Hindi / Telugu / Kannada / Tamil / English) only as an override when Auto-detect keeps choosing the wrong one. After a successful transcription, the detected language is shown in a small badge next to the dropdown.
+- **Speech model** — defaults to **Whisper (fast)**. Switch to **IndicConformer-600M (AI4Bharat)** for Indian languages when transcript quality matters more than latency. First IndicConformer call downloads ~600 MB to `~/.cache/pdb/models/indic-conformer/`; subsequent calls are fast.
+
+Combinations:
+
+| Patient language | Speech model | Behaviour |
+|------------------|--------------|-----------|
+| Auto-detect      | Whisper       | Whisper auto-detects + transcribes in one pass |
+| Specific (e.g. Telugu) | Whisper | Whisper locked to the chosen language |
+| Auto-detect      | IndicConformer | Whisper runs **only to detect** the language → IndicConformer re-transcribes locked to that language (hybrid auto-detect) |
+| Specific (e.g. Telugu) | IndicConformer | IndicConformer transcribes directly with the chosen language |
+
+The Doctor turn always uses Whisper-locked-English because Whisper is already excellent on English and the IndicConformer load tax adds no value there.
+
+> **Tip:** The status bar at the bottom of the UI shows Ollama connectivity and any server-side warnings (e.g. "No clear speech was detected", "Gemma 4 returned an empty translation"). If you see a `Detected: Telugu` badge appear with Telugu speech but the translation comes back empty, restart Flask — `core/engine.py` is not auto-reloaded.
 
 ---
 
@@ -374,9 +438,13 @@ pytest --cov=. --cov-report=term-missing
 ```
 patient-doctor-bridge/
 ├── audio/
-│   ├── handler.py          # Whisper transcription + language detection (one-pass)
+│   ├── handler.py          # Whisper transcription + language detection + hallucination guard
+│   ├── indic_conformer.py  # OPTIONAL: AI4Bharat IndicConformer-600M ASR backend
 │   ├── language_id.py      # Constrain/renormalise Whisper language probs to 5 codes
-│   └── recorder.py         # sounddevice mic capture → temp WAV file
+│   ├── preprocessor.py     # SNR + silence analysis, light noise gate
+│   ├── recorder.py         # sounddevice mic capture → temp WAV file
+│   ├── script_normalizer.py# Detect & repair Urdu / romanised script in Indic transcripts
+│   └── tts.py              # Facebook MMS-TTS — patient-language read-aloud
 │
 ├── cli/
 │   ├── main.py             # pdb entry point — routes subcommands
@@ -449,10 +517,21 @@ MODELS = {
 }
 ```
 
-- **Only `gemma4:*` model tags are permitted.** No GPT, Llama, Mistral, or other models.
-- **All inference must run locally.** No cloud API calls.
+- **Only `gemma4:*` model tags are permitted for LLM inference.** No GPT, Llama, Mistral, or other LLMs for any of: translation, triage extraction, prescription OCR (multimodal vision), or reassurance phrase translation.
+- **All inference must run locally.** No cloud API calls. Every model — LLM and non-LLM — runs on the device via Ollama (`http://localhost:11434`) or local PyTorch / CTranslate2.
 - **Python 3.11 only.** The TTS dependency (Coqui XTTS v2, `TTS==0.22.0`) does not support 3.12+.
 - TTFT target on Raspberry Pi 5 + Hailo-10H NPU: **< 500 ms** (Phase 7).
+
+### Models used and why each is compliant
+
+| Component | Model | Role | LLM? | Why it's compliant |
+|-----------|-------|------|------|--------------------|
+| Translation, triage, OCR, reassurance | `gemma4:e2b` / `gemma4:e4b` (Ollama) | All language understanding & generation | **Yes** | Both are Gemma 4 variants — the only models permitted by the challenge rules. |
+| Speech-to-text (default) | `faster-whisper` (CTranslate2) | Acoustic model: waveform → text glyphs | No | ASR is a signal-processing model, not LLM inference. Runs locally. |
+| Speech-to-text (optional) | `ai4bharat/indic-conformer-600m-multilingual` | Acoustic model trained specifically for Indian languages | No | Same category as Whisper — Conformer-CTC/RNNT, not an LLM. Runs locally via Transformers + Torch. Opt-in only. |
+| Text-to-speech | `facebook/mms-tts-*` (VITS) | Vocoder + duration predictor: text glyphs → waveform | No | TTS is the inverse of ASR; not LLM inference. Runs locally via Transformers + Torch. |
+
+The challenge rules' "Gemma 4 only" requirement applies to LLM inference. ASR and TTS are auxiliary subsystems that produce or consume audio; the original project already used Whisper (also non-Gemma) for ASR, so the precedent for non-Gemma signal models is built into the project from day one. IndicConformer is purely additive — Whisper remains the default and the user opts in.
 
 ---
 
@@ -462,13 +541,20 @@ All knobs are in `config/settings.py`:
 
 | Setting | Default | Effect |
 |---------|---------|--------|
-| `WHISPER_MODEL_SIZE` | `"base"` | Upgrade to `"small"` for better Indic accuracy; downgrade for Pi 5 speed |
-| `WHISPER_BEAM_SIZE` | `1` | Greedy decoding (~4–5× faster than beam=5 on CPU) |
-| `WHISPER_VAD_FILTER` | `True` | Pre-filters silence; saves time on recordings with long pauses |
-| `OLLAMA_TIMEOUT` | `120` | Seconds for fast translation calls |
-| `OLLAMA_TIMEOUT_REASONING` | `300` | Seconds for triage/OCR with `think=True` |
-| `GEMMA_TEMPERATURE` | `0.2` | Low = more deterministic translations |
-| `GEMMA_NUM_CTX` | `4096` | Context window size |
-| `WEB_HOST` | `127.0.0.1` | Change to `0.0.0.0` for LAN access |
-| `WEB_PORT` | `5000` | Web UI port |
+| `ASR_BACKEND_DEFAULT` | `"whisper"` | Backend used when a request doesn't specify one. Set to `"indic_conformer"` to make IndicConformer the default on requests that omit `asr_backend`. The UI always sends an explicit value. |
+| `ASR_BACKENDS_AVAILABLE` | `("whisper", "indic_conformer")` | Whitelist of accepted backends. Requests with any other value silently fall back to `ASR_BACKEND_DEFAULT`. |
+| `INDIC_CONFORMER_MODEL_ID` | `"ai4bharat/indic-conformer-600m-multilingual"` | HuggingFace model id loaded by `IndicConformerHandler`. Pin to a specific revision if you need reproducibility. |
+| `INDIC_CONFORMER_DECODER` | `"rnnt"` | `"rnnt"` (more accurate) or `"ctc"` (slightly faster, marginally less accurate). |
+| `WHISPER_MODEL_SIZE` | `"base"` | Upgrade to `"small"` for better Indic accuracy; downgrade for Pi 5 speed. |
+| `WHISPER_BEAM_SIZE` | `1` | Greedy decoding (~4–5× faster than beam=5 on CPU). |
+| `WHISPER_VAD_FILTER` | `True` | Pre-filters silence; saves time on recordings with long pauses. |
+| `OLLAMA_TIMEOUT` | `600` | Seconds for fast-translation calls. Sized to cover Gemma 4's first cold-load (up to several minutes on a laptop CPU); subsequent calls return in seconds thanks to `keep_alive`. |
+| `OLLAMA_TIMEOUT_REASONING` | `900` | Seconds for triage/OCR with `think=True`. Used for warmup too so the first Gemma load doesn't fail. |
+| `GEMMA_TEMPERATURE` | `0.2` | Low = more deterministic translations. The engine auto-bumps temperature to 0.5 on a retry when the first call returns empty. |
+| `GEMMA_NUM_CTX` | `8192` | Context window for reasoning / OCR. |
+| `GEMMA_NUM_CTX_FAST` | `2048` | Context window for translation / reassurance. |
+| `GEMMA_KEEP_ALIVE` | `"30m"` | How long Ollama pins the model in (V)RAM between calls. |
+| `TTS_PREWARM_LANGS` | `[]` | Languages to eagerly preload at server startup. Empty = lazy load on first 🔊 click. Set to `["hi","te","kn","ta"]` for zero-latency first-use. |
+| `WEB_HOST` | `127.0.0.1` | Change to `0.0.0.0` for LAN access. |
+| `WEB_PORT` | `5000` | Web UI port. |
 

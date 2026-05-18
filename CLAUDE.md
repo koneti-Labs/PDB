@@ -28,6 +28,16 @@ MODELS = {
 - Suggest benchmarking against non-Gemma models
 - Change the model tags to anything other than `gemma4:e2b` and `gemma4:e4b`
 
+### What this rule does NOT cover (and why)
+
+The "Gemma 4 only" rule applies to **LLM inference** — anything that translates, reasons, extracts structured data, or interprets an image. Acoustic / signal-processing models are a different category and the project has always used non-Gemma models for them:
+
+- **Whisper** (`faster-whisper`) — default ASR, ships in the base install.
+- **AI4Bharat IndicConformer-600M** (`audio/indic_conformer.py`) — optional opt-in ASR for better Indian-language accuracy. Exposed to the user via a "Speech model" dropdown in the Bridge and Triage tabs; Whisper remains the default.
+- **Facebook MMS-TTS** (`audio/tts.py`) — patient-language read-aloud (the 🔊 buttons in the UI).
+
+All three run **locally** (no cloud APIs), satisfying the privacy-first rule. None of them perform LLM inference — they convert waveforms to glyphs (ASR) or glyphs to waveforms (TTS). Adding IndicConformer is therefore additive and policy-compliant; do not remove Whisper from the codebase, but do not block adding more acoustic backends if they genuinely help Indic transcription either.
+
 ## Python Version — 3.11 ONLY
 
 **Use Python 3.11, NOT 3.12.** The TTS dependency (Coqui XTTS v2, `TTS==0.22.0`) only supports Python 3.11. All venvs, CI, and deployment scripts must target 3.11:
@@ -67,6 +77,19 @@ Whisper:
 - `WHISPER_VAD_FILTER` — pre-trim silence
 - `WHISPER_CONDITION_ON_PREVIOUS` — keep `False` for short clinical utterances
 
+ASR backend selection:
+- `ASR_BACKEND_DEFAULT` — `"whisper"` (default) or `"indic_conformer"`. The web UI always sends an explicit choice per request; this default only affects requests that omit `asr_backend`.
+- `ASR_BACKENDS_AVAILABLE` — whitelist of accepted backend names.
+- `INDIC_CONFORMER_MODEL_ID` — HuggingFace id of the AI4Bharat checkpoint.
+- `INDIC_CONFORMER_DECODER` — `"rnnt"` (more accurate) or `"ctc"` (faster).
+
+TTS:
+- `TTS_PREWARM_LANGS` — list of ISO codes to eagerly load MMS-TTS for at startup; `[]` means lazy-load on first 🔊 click.
+
 ## Server Startup Contract
 
 `pdb server` (in `web/server.py::run_server`) MUST warm up both Whisper and both Gemma 4 models before `app.run()` so the first user request is not a cold start. Do not remove the warmup.
+
+Note: Gemma 4 warmup uses the **long-timeout** Ollama client (`OLLAMA_TIMEOUT_REASONING`, default 900 s) because loading a freshly-installed model into RAM on a CPU laptop can take several minutes. The fast-translation timeout (`OLLAMA_TIMEOUT`, default 600 s) is for steady-state requests once the model is resident.
+
+IndicConformer is **not** preloaded at startup — it's lazy-loaded the first time a user picks `indic_conformer` in the UI. This keeps `pdb server` startup fast for users who never use that backend.

@@ -45,7 +45,13 @@ from rich.console import Console
 
 from audio.handler import AudioHandler
 from audio.tts import TTSService
-from config.settings import INFERENCE_POOL_SIZE, WEB_HOST, WEB_PORT
+from config.settings import (
+    ASR_BACKEND_DEFAULT,
+    ASR_BACKENDS_AVAILABLE,
+    INFERENCE_POOL_SIZE,
+    WEB_HOST,
+    WEB_PORT,
+)
 from core.engine import GemmaEngine
 from translation.prescription import PrescriptionService
 from translation.reassurance import REASSURANCE_PHRASES, ReassuranceService
@@ -93,6 +99,10 @@ _inference_pool = ThreadPoolExecutor(
 # per-request "Loading Whisper..." line we used to see in the logs.
 _engine: GemmaEngine | None = None
 _audio_handler: AudioHandler | None = None
+# IndicConformerHandler is loaded lazily on first request so users who never
+# pick the IndicConformer backend don't pay the ~600 MB / multi-second
+# download tax.  Import is inside _get_indic_conformer() for the same reason.
+_indic_conformer_handler = None  # type: ignore[var-annotated]
 _translation_svc: TranslationService | None = None
 _triage_svc: TriageService | None = None
 _reassure_svc: ReassuranceService | None = None
@@ -112,6 +122,119 @@ def _get_audio_handler() -> AudioHandler:
     if _audio_handler is None:
         _audio_handler = AudioHandler()
     return _audio_handler
+
+
+def _get_indic_conformer():
+    """Lazy-load the IndicConformer handler.  Import is local so a stale or
+    incomplete transformers install doesn't break the rest of the server."""
+    global _indic_conformer_handler
+    if _indic_conformer_handler is None:
+        from audio.indic_conformer import IndicConformerHandler
+        _indic_conformer_handler = IndicConformerHandler()
+    return _indic_conformer_handler
+
+
+def _resolve_asr_backend(form_value: str | None) -> str:
+    """Map the form's asr_backend field to a known backend name.
+
+    Falls back to ASR_BACKEND_DEFAULT when the value is missing or
+    unrecognised so a malformed UI doesn't 500 the request.
+    """
+    value = (form_value or "").strip().lower()
+    if value in ASR_BACKENDS_AVAILABLE:
+        return value
+    return ASR_BACKEND_DEFAULT
+
+
+def _dispatch_asr(
+    tmp_path: str,
+    locked_lang: str,
+    asr_backend: str,
+) -> dict:
+    """Run ASR according to *asr_backend* and *locked_lang*, return a
+    TranscriptResult-shaped dict.
+
+    Centralises the four cases shared by ``/api/bridge/patient`` and
+    ``/api/triage`` so the two endpoints never disagree on routing:
+
+      (whisper,         locked) → ``AudioHandler.transcribe_locked``
+      (whisper,         auto)   → ``AudioHandler.transcribe``           (constrained)
+      (indic_conformer, locked) → ``IndicConformerHandler.transcribe``
+      (indic_conformer, auto)   → Whisper for cheap detect → IndicConformer
+                                   for the real transcript.
+
+    The auto+IndicConformer hybrid copies *tmp_path* to a sibling file
+    because Whisper's transcribe() deletes its input in the finally
+    block; without the copy, IndicConformer would later face a missing
+    file.  ``_save_temp_audio(audio_file)`` cannot be called twice on
+    the same Flask FileStorage — the second save writes 0 bytes since
+    the request stream was already drained.
+
+    Parameters
+    ----------
+    tmp_path:
+        Filesystem path to the audio that will be consumed (and
+        unconditionally deleted) by the chosen backend.
+    locked_lang:
+        Either an ISO 639-1 code in ``{hi, te, kn, ta, en}`` (meaning
+        the user picked a specific language in the UI) or an empty /
+        "auto" sentinel (meaning auto-detect).
+    asr_backend:
+        Output of ``_resolve_asr_backend()`` — one of
+        ``{"whisper", "indic_conformer"}``.
+
+    Returns
+    -------
+    dict
+        ``{"text": str, "language": str, "confidence": float}``.
+
+    Raises
+    ------
+    Any exception from the underlying backends propagates so the calling
+    endpoint can decide how to respond (HTTP error vs. SSE error event).
+    """
+    chosen = (locked_lang or "").strip().lower()
+    explicit = chosen in {"hi", "te", "kn", "ta", "en"}
+
+    if asr_backend == "indic_conformer":
+        ic = _get_indic_conformer()
+        if explicit:
+            console.print(
+                f"[dim]ASR: IndicConformer, language='{chosen}' (user override)[/dim]"
+            )
+            return ic.transcribe(tmp_path, language=chosen)
+
+        # Hybrid: Whisper detects, IndicConformer transcribes.
+        console.print(
+            "[dim]ASR: Whisper detect → IndicConformer transcribe "
+            "(hybrid auto-detect)…[/dim]"
+        )
+        import shutil
+        detect_path = tmp_path + ".detect"
+        try:
+            shutil.copyfile(tmp_path, detect_path)
+        except OSError as exc:
+            raise RuntimeError(
+                f"Failed to stage audio for language detection: {exc}"
+            ) from exc
+        detect_res = _get_audio_handler().transcribe(detect_path)
+        detected = detect_res["language"]
+        console.print(
+            f"[dim]Auto-detect picked '{detected}' (Whisper); "
+            f"routing to IndicConformer.[/dim]"
+        )
+        return ic.transcribe(tmp_path, language=detected)
+
+    # Default backend — Whisper
+    handler = _get_audio_handler()
+    if explicit:
+        console.print(
+            f"[dim]ASR: Whisper, language locked to '{chosen}' (user override)[/dim]"
+        )
+        return handler.transcribe_locked(tmp_path, language=chosen)
+
+    console.print("[dim]ASR: Whisper, constrained auto-detect…[/dim]")
+    return handler.transcribe(tmp_path)
 
 
 def _get_translation_svc() -> TranslationService:
@@ -260,27 +383,25 @@ def create_app() -> Flask:
             """Format a dict as a single SSE data line."""
             return "data: " + json.dumps(payload) + "\n\n"
 
-        # Check if user locked a language (skip auto-detection)
+        # Check if user locked a language (skip auto-detection) and which
+        # ASR backend they picked.  Same options as the Bridge tab.
         locked_lang = request.form.get("language", "").strip().lower()
+        asr_backend = _resolve_asr_backend(request.form.get("asr_backend"))
 
         def generate():
             try:
                 # ── Step 1: Transcription ─────────────────────────────────
                 yield _sse({"status": "transcribing"})
 
-                # Submit to the bounded inference pool so this blocking call
-                # does not pin the Flask thread indefinitely.
-                handler = _get_audio_handler()
-                if locked_lang and locked_lang in {"hi", "te", "kn", "ta", "en"}:
-                    transcribe_future = _inference_pool.submit(
-                        handler.transcribe_locked, tmp_path, locked_lang
-                    )
-                else:
-                    transcribe_future = _inference_pool.submit(
-                        handler.transcribe, tmp_path
-                    )
-                result = transcribe_future.result()   # blocks until Whisper finishes
-                transcript   = result["text"]
+                # Off-load the blocking ASR work to the bounded inference
+                # pool so the Flask thread stays free to flush SSE events.
+                # _dispatch_asr() picks the right backend (Whisper /
+                # IndicConformer / hybrid) and returns a uniform result.
+                transcribe_future = _inference_pool.submit(
+                    _dispatch_asr, tmp_path, locked_lang, asr_backend
+                )
+                result = transcribe_future.result()
+                transcript    = result["text"]
                 detected_lang = result["language"]
 
                 console.print(
@@ -292,6 +413,24 @@ def create_app() -> Flask:
                     "transcript": transcript,
                     "language":   detected_lang,
                 })
+
+                # Bail out early if Whisper produced nothing meaningful.  Sending
+                # an empty or sentinel transcript to Gemma 4 just wastes 10-30 s
+                # of inference and returns "the patient's statement is
+                # unintelligible" — which is what was happening in the broken
+                # Kannada-with-Arabic-script screenshot.
+                meaningful = transcript.strip()
+                if (not meaningful) or meaningful == "[no speech detected]":
+                    yield _sse({
+                        "status": "error",
+                        "error":  (
+                            "Could not transcribe the recording. "
+                            "Please record again, speak closer to the microphone, "
+                            "and choose the patient's language explicitly above "
+                            "instead of Auto-detect if the problem persists."
+                        ),
+                    })
+                    return
 
                 # ── Step 2: Gemma 4 triage extraction ────────────────────
                 yield _sse({
@@ -440,6 +579,25 @@ def create_app() -> Flask:
             return send_file(buf, mimetype="audio/wav", as_attachment=False)
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
+        except ModuleNotFoundError as exc:
+            # Most common cause: PyTorch (required by MMS-TTS / transformers
+            # VitsModel) is not installed in the active venv.  Surface a
+            # concrete remediation hint so the user doesn't have to read
+            # the raw traceback.
+            missing = exc.name or str(exc)
+            console.print(
+                f"[red]TTS dependency '{missing}' is not installed in this "
+                f"Python environment.  Install it with:[/red]\n"
+                f"  pip install torch transformers"
+            )
+            return jsonify({
+                "error": (
+                    f"Text-to-speech is unavailable because the Python "
+                    f"package '{missing}' is not installed.  Install it "
+                    f"with: pip install torch transformers"
+                ),
+                "missing_dependency": missing,
+            }), 503
         except Exception as exc:
             traceback.print_exc()
             return jsonify({"error": str(exc)}), 500
@@ -455,6 +613,7 @@ def _handle_audio_translation(role: str):
     """Shared handler for patient/doctor audio translation."""
     audio_file = request.files.get("audio")
     lang_code = request.form.get("language", "hi")
+    asr_backend = _resolve_asr_backend(request.form.get("asr_backend"))
 
     if not audio_file:
         return jsonify({"error": "No audio file provided"}), 400
@@ -467,39 +626,91 @@ def _handle_audio_translation(role: str):
         handler = _get_audio_handler()
         if role == "doctor":
             # Doctor's audio is always English — lock Whisper, skip detection.
+            # We keep Whisper here unconditionally: English ASR is the one
+            # case where Whisper is already excellent and IndicConformer
+            # offers no advantage, so it's not worth the ~600 MB load and
+            # the slower per-request inference.
             result = handler.transcribe_locked(tmp_path, language="en")
         else:
-            # Patient turn: use auto-detection so the system automatically
-            # recognises whichever supported language the patient speaks
-            # (hi, te, kn, ta, en).  The transcribe() method has built-in
-            # constrained fallback to these five languages.
-            result = handler.transcribe(tmp_path)
+            # Patient turn.  The Bridge dropdown now defaults to
+            # "Auto-detect" (value="auto").  Behaviour:
+            #
+            #   • "auto" (or empty / unknown)  → constrained auto-detect.
+            #     Whisper picks the language and the script normaliser fixes
+            #     any wrong-script output.  This is the right default
+            #     because the patient may not know to pick the dropdown
+            #     correctly, and locking to the wrong language produces
+            #     garbled native-script output (e.g. locking a Telugu clip
+            #     to Hindi transliterates Telugu phonemes into Devanagari
+            #     gibberish).
+            #
+            #   • specific code (hi/te/kn/ta/en) → lock Whisper.  Used only
+            #     when the user explicitly overrides because auto-detect
+            #     keeps picking the wrong language.
+            # Bridge tab patient turn → shared ASR dispatch helper.  See
+            # _dispatch_asr() for the routing matrix (Whisper / IndicConformer
+            # / hybrid auto-detect).
+            result = _dispatch_asr(tmp_path, lang_code, asr_backend)
         transcript = result["text"]
         detected_lang = result["language"]
+
+        # Bail early on hallucinated / no-speech transcripts before we waste
+        # Gemma 4 time on them.  The AudioHandler sets this sentinel for
+        # both empty output and Whisper repeat-token loops.
+        if transcript.strip() == "[no speech detected]":
+            return jsonify({
+                "transcript": transcript,
+                "detected_language": detected_lang if role == "patient" else "en",
+                "translation": "",
+                "direction": f"{role}_to_{'doctor' if role == 'patient' else 'patient'}",
+                "warning": (
+                    "No clear speech was detected in the recording — please "
+                    "record again, speak closer to the microphone, and reduce "
+                    "background noise.  If Auto-detect keeps misidentifying "
+                    "the language, override it with the dropdown."
+                ),
+            }), 200
 
         svc = _get_translation_svc()
         if role == "patient":
             console.print(f"[dim]Translating patient ({detected_lang}) → doctor (en)…[/dim]")
             translation = svc.patient_to_doctor(transcript, detected_lang)
+            warning = None
             if not translation:
                 console.print("[yellow]⚠ Warning: Empty translation returned[/yellow]")
+                warning = (
+                    "Gemma 4 returned an empty translation.  The transcript "
+                    "above may be too garbled to translate — try recording "
+                    "again or picking the language explicitly."
+                )
             return jsonify({
                 "transcript": transcript,
                 "detected_language": detected_lang,
                 "translation": translation,
                 "direction": "patient_to_doctor",
+                "warning": warning,
             })
         else:
             console.print(f"[dim]Translating doctor (en) to patient ({lang_code})...[/dim]")
+            console.print(f"[dim]Doctor transcript: {transcript[:100]}...[/dim]")
             translation = svc.doctor_to_patient(transcript, lang_code)
+            warning = None
             if not translation:
                 console.print("[yellow]⚠ Warning: Empty translation returned[/yellow]")
+                warning = (
+                    "Gemma 4 returned an empty translation back to the patient. "
+                    "Check the Ollama server logs and confirm gemma4:e2b is "
+                    "loaded; retry should usually succeed."
+                )
+            else:
+                console.print(f"[dim]Translation result: {translation[:100]}...[/dim]")
             return jsonify({
                 "transcript": transcript,
                 "detected_language": "en",
                 "translation": translation,
                 "direction": "doctor_to_patient",
                 "target_language": lang_code,
+                "warning": warning,
             })
     except Exception as exc:
         console.print(f"[red]✗ Translation error ({role}): {exc}[/red]")

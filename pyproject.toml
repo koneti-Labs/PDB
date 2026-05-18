@@ -17,12 +17,35 @@ dependencies = [
     "ollama>=0.4.7",
     "flask>=3.0",
     "requests>=2.31",
+    # ── Text-to-speech (Facebook MMS-TTS via HuggingFace transformers) ──
+    # MMS-TTS is loaded by audio/tts.py::TTSService.synthesize() and used by
+    # the /api/tts endpoint to read aloud doctor→patient translations,
+    # reassurance phrases, and prescription summaries.  transformers needs
+    # torch at runtime to construct the VitsModel and run inference.  CPU
+    # wheels are sufficient — no CUDA build is required for the laptop /
+    # Pi 5 deployment targets called out in CLAUDE.md.
+    #
+    # Note: these same two packages also back the optional AI4Bharat
+    # IndicConformer-600M ASR backend exposed by audio/indic_conformer.py
+    # (see the [project.optional-dependencies] indic-asr extra below for
+    # additions that are *only* needed when that backend is selected).
+    "torch>=2.2,<3",
+    "transformers>=4.40,<5",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8",
     "ruff>=0.4",
+]
+# Extras for the optional AI4Bharat IndicConformer-600M ASR backend
+# (audio/indic_conformer.py).  Install with:
+#     pip install -e .[indic-asr]
+# torchaudio is loaded by the checkpoint's trust_remote_code path; it is
+# NOT needed for the default Whisper backend, so we leave it out of the
+# base install to avoid the extra ~50 MB / dependency-resolution hit.
+indic-asr = [
+    "torchaudio>=2.2,<3",
 ]
 
 [project.scripts]
