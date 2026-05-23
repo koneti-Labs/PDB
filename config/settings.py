@@ -8,6 +8,7 @@ Pi 5 migration notes are inline so they're never lost.
 """
 from __future__ import annotations
 
+import os
 import tempfile
 from pathlib import Path
 
@@ -92,7 +93,13 @@ MODEL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 # ---------------------------------------------------------------------------
 # Ollama (Phase 2+) — local inference, nothing leaves the device
 # ---------------------------------------------------------------------------
-OLLAMA_HOST: str = "http://localhost:11434"
+# Defaults to the local Ollama instance (CPU on this laptop).  Set the
+# PDB_OLLAMA_HOST environment variable to point at a REMOTE Ollama — e.g. a
+# GPU box on your LAN ("http://192.168.1.50:11434") or a tunnelled cloud GPU
+# notebook ("https://xxxx.ngrok-free.app") — without editing this file.
+# Unset the variable to fall straight back to local CPU.  All inference still
+# runs on whatever machine Ollama lives on; nothing else changes.
+OLLAMA_HOST: str = os.environ.get("PDB_OLLAMA_HOST", "http://localhost:11434")
 # Per-request HTTP timeout for the small/fast translation model.  This has to
 # accommodate the *first* call after Ollama is restarted, when the model is
 # being loaded into (V)RAM from disk and the request blocks until the runner

@@ -245,9 +245,16 @@ class GemmaEngine:
             # cold-load tax on every request.  This is the single biggest
             # win for end-to-end latency.
             "keep_alive": _cfg.GEMMA_KEEP_ALIVE,
+            # Always send `think` explicitly (not just when True).  Omitting it
+            # lets Ollama fall back to the model's DEFAULT thinking behaviour,
+            # which on a reasoning-capable Gemma 4 build can silently turn on
+            # chain-of-thought and add many seconds of latency per request on
+            # CPU.  Sending think=False on the FAST_TRANSLATION path actively
+            # suppresses reasoning; think=True is still sent for triage.
+            # (Old Ollama SDKs <0.5 reject the keyword — the TypeError handler
+            # below strips it and retries, so this stays backward-compatible.)
+            "think": think,
         }
-        if think:
-            generate_kwargs["think"] = True
 
         # Determine the effective timeout for error messages
         effective_timeout = (
